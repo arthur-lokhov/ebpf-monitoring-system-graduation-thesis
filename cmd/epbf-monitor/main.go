@@ -55,7 +55,7 @@ func main() {
 	// Initialize S3 storage
 	log.Println("📦 Connecting to S3...")
 	s3Config := s3.DefaultConfig()
-	
+
 	if endpoint := os.Getenv("S3_ENDPOINT"); endpoint != "" {
 		s3Config.Endpoint = endpoint
 	}
@@ -69,10 +69,9 @@ func main() {
 		s3Config.BucketName = bucket
 	}
 
-	s3Client, err := s3.NewClient(s3Config)
+	_, err = s3.NewClient(s3Config)
 	if err != nil {
 		log.Printf("⚠️  S3 connection failed: %v (running without object storage)", err)
-		s3Client = nil
 	} else {
 		log.Println("✅ Connected to S3")
 	}

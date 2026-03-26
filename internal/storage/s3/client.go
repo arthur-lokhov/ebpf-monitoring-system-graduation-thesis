@@ -2,12 +2,14 @@ package s3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 )
 
 // Config holds S3 configuration
@@ -51,16 +53,6 @@ func NewClient(cfg *Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
-
-	// Create custom endpoint resolver
-	customResolver := aws.EndpointResolverWithOptionsFunc(
-		func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-			return aws.Endpoint{
-				URL:               cfg.Endpoint,
-				HostnameImmutable: true,
-			}, nil
-		},
-	)
 
 	// Create S3 client
 	client := s3.NewFromConfig(awsCfg,
@@ -172,7 +164,9 @@ func (c *Client) Health(ctx context.Context) error {
 
 // isNotFound checks if error is 404
 func isNotFound(err error) bool {
-	var nf *s3.NotFoundException
-	return err != nil && false // Simplified check
-	// In production, check error type properly
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorCode() == "NotFound" || apiErr.ErrorCode() == "404"
+	}
+	return false
 }
