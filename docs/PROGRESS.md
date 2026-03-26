@@ -214,3 +214,65 @@ $ curl http://localhost:8080/health
 **Последнее обновление:** 2024-03-26
 
 **Статус:** Фаза 1 завершена, Фаза 2 в процессе
+
+---
+
+## 🧪 Тестирование
+
+### Запуск зависимостей
+
+```bash
+# Запуск PostgreSQL и Garage S3
+$ docker-compose -f deployments/docker-compose.yml up -d
+
+# PostgreSQL работает
+$ docker-compose ps
+epbf-postgres   Up (healthy)   0.0.0.0:5432->5432/tcp
+
+# Garage S3 (требует Linux, проблемы на macOS Virtualization)
+epbf-garage     Restarting
+```
+
+### Тестирование сервера
+
+```bash
+# Запуск сервера
+$ go run ./cmd/epbf-monitor
+
+# Health check
+$ curl http://localhost:8080/health
+{
+    "status": "ok",
+    "timestamp": "2026-03-26T14:06:31.017036Z"
+}
+
+# Metrics endpoint (Prometheus format)
+$ curl http://localhost:8080/metrics
+# epbf-monitoring metrics
+# HELP epbf_info Epbf monitoring service info
+# TYPE epbf_info gauge
+epbf_info{version="0.1.0"} 1
+
+# Plugins API
+$ curl http://localhost:8080/api/v1/plugins
+{"success":true,"data":[]}
+
+# Add plugin
+$ curl -X POST http://localhost:8080/api/v1/plugins \
+  -H "Content-Type: application/json" \
+  -d '{"git_url": "https://github.com/example/plugin.git"}'
+{"git_url":"...","status":"pending"}
+```
+
+### Результаты
+
+✅ **PostgreSQL** — работает, подключения принимаются
+✅ **HTTP сервер** — запускается на порту 8080
+✅ **Health endpoint** — возвращает статус OK
+✅ **Metrics endpoint** — Prometheus-совместимый формат
+✅ **API endpoints** — CRUD операции работают
+✅ **Build** — компилируется без ошибок (binary ~14MB)
+
+⚠️ **Garage S3** — проблемы с volume mounts на macOS Virtualization Framework
+   - Требуется Linux или Docker Desktop с QEMU
+   - Альтернатива: MinIO (работает стабильно)
