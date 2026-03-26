@@ -25,7 +25,7 @@ type Config struct {
 // DefaultConfig returns default configuration for Garage S3
 func DefaultConfig() *Config {
 	return &Config{
-		Endpoint:   "http://localhost:3900",
+		Endpoint:   "http://127.0.0.1:3900",
 		Region:     "garage",
 		AccessKey:  "",
 		SecretKey:  "",

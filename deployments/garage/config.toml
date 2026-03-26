@@ -1,23 +1,21 @@
-# Garage S3 Configuration
+# Garage S3 Configuration (single-node setup)
 
-metadata_dir = "/var/lib/garage/meta"
-data_dir = "/var/lib/garage/data"
-db_engine = "sqlite"
+metadata_dir = "/garage-data/meta"
+data_dir = "/garage-data/data"
+db_engine = "lmdb"
+metadata_auto_snapshot_interval = "6h"
 
-rpc_bind_addr = "0.0.0.0:3900"
-rpc_public_addr = "127.0.0.1:3900"
+replication_factor = 1
+
+compression_level = 2
+
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
 rpc_secret = "epbf_garage_secret_key_change_in_production"
 
-admin_bind_addr = "0.0.0.0:3901"
-admin_public_addr = "127.0.0.1:3901"
-
-s3_api = true
-s3_bind_addr = "0.0.0.0:3900"
-s3_public_addr = "127.0.0.1:3900"
+[s3_api]
 s3_region = "garage"
+api_bind_addr = "[::]:3900"
 
-replication_max_bytes_per_second = 104857600
-replication_max_concurrent_transactions = 4
-
-log_level = "info"
-log_format = "json"
+[s3_web]
+bind_addr = "[::]:3902"

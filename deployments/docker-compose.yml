@@ -13,60 +13,27 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./internal/storage/postgres/migrations:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U epbf"]
       interval: 5s
       timeout: 5s
       retries: 5
-    networks:
-      - epbf-network
 
   # Garage S3-compatible object storage
   garage:
-    image: dxflrs/garage:latest
+    image: dxflrs/garage:v2.2.0
     container_name: epbf-garage
-    environment:
-      GARAGE_CONFIG: /etc/garage/config.toml
-    ports:
-      - "3900:3900"  # S3 API
-      - "3901:3901"  # Admin API
+    network_mode: "host"
+    restart: unless-stopped
     volumes:
-      - garage_data:/var/lib/garage
-      - ./deployments/garage/config.toml:/etc/garage/config.toml
-    command: ["server"]
+      - /Users/asa/Documents/epbf-monitoring/deployments/garage/data:/garage-data
+      - /Users/asa/Documents/epbf-monitoring/deployments/garage/config.toml:/etc/garage/config.toml:ro
+    command: ["/garage", "server"]
     healthcheck:
-      test: ["CMD", "garage", "status", "--format", "json"]
+      test: ["CMD", "/garage", "status", "--format", "json"]
       interval: 10s
       timeout: 5s
       retries: 3
-    networks:
-      - epbf-network
-
-  # Initialize Garage bucket
-  garage-init:
-    image: dxflrs/garage:latest
-    container_name: epbf-garage-init
-    environment:
-      GARAGE_CONFIG: /etc/garage/config.toml
-    volumes:
-      - ./deployments/garage/config.toml:/etc/garage/config.toml
-    command: >
-      sh -c "
-        sleep 5 &&
-        garage bucket create epbf-plugins &&
-        echo 'Bucket epbf-plugins created'
-      "
-    depends_on:
-      garage:
-        condition: service_healthy
-    networks:
-      - epbf-network
-
-networks:
-  epbf-network:
-    driver: bridge
 
 volumes:
   postgres_data:
-  garage_data:
