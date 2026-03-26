@@ -1,0 +1,23 @@
+# Garage S3 Configuration
+
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "sqlite"
+
+rpc_bind_addr = "0.0.0.0:3900"
+rpc_public_addr = "127.0.0.1:3900"
+rpc_secret = "epbf_garage_secret_key_change_in_production"
+
+admin_bind_addr = "0.0.0.0:3901"
+admin_public_addr = "127.0.0.1:3901"
+
+s3_api = true
+s3_bind_addr = "0.0.0.0:3900"
+s3_public_addr = "127.0.0.1:3900"
+s3_region = "garage"
+
+replication_max_bytes_per_second = 104857600
+replication_max_concurrent_transactions = 4
+
+log_level = "info"
+log_format = "json"
