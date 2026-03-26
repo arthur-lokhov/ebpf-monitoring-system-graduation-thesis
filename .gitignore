@@ -6,6 +6,8 @@
 *.exe~
 *.dll
 *.dylib
+/epbf-monitor
+/bin/
 
 # Go
 /bin
