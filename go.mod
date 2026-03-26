@@ -1,11 +1,13 @@
 module github.com/epbf-monitoring/epbf-monitor
 
-go 1.21.0
+go 1.22
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.26.1
 	github.com/aws/aws-sdk-go-v2/config v1.27.11
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.53.1
+	github.com/go-chi/chi/v5 v5.2.5
+	github.com/go-chi/cors v1.2.2
 	github.com/go-git/go-git/v5 v5.11.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.5.5

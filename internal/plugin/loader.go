@@ -20,11 +20,11 @@ type LoadConfig struct {
 
 // LoadResult holds the result of plugin loading
 type LoadResult struct {
-	PluginDir  string
-	Manifest   *Manifest
-	GitCommit  string
-	GitRef     string
-	LoadTime   time.Duration
+	PluginDir string
+	Manifest  *Manifest
+	GitCommit string
+	GitRef    string
+	LoadTime  time.Duration
 }
 
 // Loader handles plugin loading from Git repositories
