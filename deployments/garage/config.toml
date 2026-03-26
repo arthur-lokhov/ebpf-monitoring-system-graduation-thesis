@@ -11,7 +11,7 @@ compression_level = 2
 
 rpc_bind_addr = "[::]:3901"
 rpc_public_addr = "127.0.0.1:3901"
-rpc_secret = "epbf_garage_secret_key_change_in_production"
+rpc_secret = "f0ae5995c51f42de22e990144ea683d749ed27025cf16e4fcfc88ae537e4ddec"
 
 [s3_api]
 s3_region = "garage"
@@ -19,3 +19,5 @@ api_bind_addr = "[::]:3900"
 
 [s3_web]
 bind_addr = "[::]:3902"
+root_domain = ".web.garage"
+index = "index.html"

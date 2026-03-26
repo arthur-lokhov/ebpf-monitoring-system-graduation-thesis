@@ -9,6 +9,9 @@
 /epbf-monitor
 /bin/
 
+# Garage S3 data
+deployments/garage/data/
+
 # Go
 /bin
 *.exe
