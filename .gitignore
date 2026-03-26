@@ -1,0 +1,63 @@
+# Binaries
+*.o
+*.so
+*.wasm
+*.exe
+*.exe~
+*.dll
+*.dylib
+
+# Go
+/bin
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/go.sum
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+.pnp
+.pnp.js
+
+# Build
+/build
+/dist
+/tmp
+/temp
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Local config
+.local.env
+.env.local
+
+# Coverage
+coverage/
+*.out
+
+# Temporary files
+tmp/
+temp/
+.cache/
+
+# Plugin build artifacts (local)
+plugins/*/build/
