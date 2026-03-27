@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // Plugin represents a loaded plugin
@@ -22,8 +23,8 @@ type Plugin struct {
 	WASMS3Key    string         `json:"wasm_s3_key,omitempty"`
 	Manifest     map[string]any `json:"manifest"`
 	Status       string         `json:"status"`
-	BuildLog     string         `json:"build_log,omitempty"`
-	ErrorMessage string         `json:"error_message,omitempty"`
+	BuildLog     pgtype.Text    `json:"build_log,omitempty"`
+	ErrorMessage pgtype.Text    `json:"error_message,omitempty"`
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 }
@@ -84,17 +85,23 @@ func (r *PluginRepo) GetByID(ctx context.Context, id uuid.UUID) (*Plugin, error)
 	`
 
 	p := &Plugin{}
+	var buildLog pgtype.Text
+	var errorMsg pgtype.Text
+	
 	err := r.client.pool.QueryRow(ctx, query, id).Scan(
 		&p.ID, &p.Name, &p.Version, &p.Description, &p.Author,
 		&p.GitURL, &p.GitCommit, &p.GitBranch,
 		&p.EBPFS3Key, &p.WASMS3Key, &p.Manifest,
-		&p.Status, &p.BuildLog, &p.ErrorMessage,
+		&p.Status, &buildLog, &errorMsg,
 		&p.CreatedAt, &p.UpdatedAt,
 	)
-
+	
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
+	
+	p.BuildLog = buildLog
+	p.ErrorMessage = errorMsg
 
 	return p, err
 }
@@ -112,17 +119,23 @@ func (r *PluginRepo) GetByName(ctx context.Context, name string) (*Plugin, error
 	`
 
 	p := &Plugin{}
+	var buildLog pgtype.Text
+	var errorMsg pgtype.Text
+	
 	err := r.client.pool.QueryRow(ctx, query, name).Scan(
 		&p.ID, &p.Name, &p.Version, &p.Description, &p.Author,
 		&p.GitURL, &p.GitCommit, &p.GitBranch,
 		&p.EBPFS3Key, &p.WASMS3Key, &p.Manifest,
-		&p.Status, &p.BuildLog, &p.ErrorMessage,
+		&p.Status, &buildLog, &errorMsg,
 		&p.CreatedAt, &p.UpdatedAt,
 	)
 
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
+	
+	p.BuildLog = buildLog
+	p.ErrorMessage = errorMsg
 
 	return p, err
 }
@@ -157,16 +170,21 @@ func (r *PluginRepo) List(ctx context.Context, status *PluginStatus) ([]*Plugin,
 	plugins := make([]*Plugin, 0)
 	for rows.Next() {
 		p := &Plugin{}
+		var buildLog pgtype.Text
+		var errorMsg pgtype.Text
+		
 		err := rows.Scan(
 			&p.ID, &p.Name, &p.Version, &p.Description, &p.Author,
 			&p.GitURL, &p.GitCommit, &p.GitBranch,
 			&p.EBPFS3Key, &p.WASMS3Key, &p.Manifest,
-			&p.Status, &p.BuildLog, &p.ErrorMessage,
+			&p.Status, &buildLog, &errorMsg,
 			&p.CreatedAt, &p.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
 		}
+		p.BuildLog = buildLog
+		p.ErrorMessage = errorMsg
 		plugins = append(plugins, p)
 	}
 

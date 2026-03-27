@@ -12,6 +12,7 @@ import (
 	pg "github.com/epbf-monitoring/epbf-monitor/internal/storage/postgres"
 	"github.com/epbf-monitoring/epbf-monitor/internal/storage/s3"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // Service handles plugin lifecycle management
@@ -78,6 +79,7 @@ func (s *Service) LoadPlugin(ctx context.Context, gitURL, ref string) (*pg.Plugi
 		GitURL:    gitURL,
 		GitBranch: ref,
 		Status:    string(pg.PluginStatusPending),
+		Manifest:  map[string]any{"name": pluginName, "version": "pending"},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -161,7 +163,7 @@ func (s *Service) buildPlugin(ctx context.Context, pluginID uuid.UUID, gitURL, r
 		WASMS3Key: wasmKey,
 		Manifest:  manifestToMap(loadResult.Manifest),
 		Status:    string(pg.PluginStatusReady),
-		BuildLog:  buildResult.BuildLog,
+		BuildLog:  pgtype.Text{String: buildResult.BuildLog, Valid: true},
 		UpdatedAt: time.Now(),
 	}
 
