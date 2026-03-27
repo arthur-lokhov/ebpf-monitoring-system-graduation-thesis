@@ -1,0 +1,52 @@
+name: container-monitor
+version: 1.0.0
+description: Мониторинг событий контейнеров Docker
+author: epbf-monitoring
+
+ebpf:
+  entry: ebpf/main.c
+  programs:
+    - name: trace_container_start
+      type: tracepoint
+      attach: syscalls/sys_enter_execve
+    - name: trace_container_stop
+      type: tracepoint
+      attach: syscalls/sys_enter_kill
+    - name: trace_network_connect
+      type: tracepoint
+      attach: syscalls/sys_enter_connect
+
+wasm:
+  entry: wasm/main.c
+  sdk_version: "1.0"
+
+metrics:
+  - name: container_starts_total
+    type: counter
+    help: Total number of container starts
+    labels: [container_id, image, command]
+    
+  - name: container_stops_total
+    type: counter
+    help: Total number of container stops
+    labels: [container_id, signal]
+    
+  - name: network_connections_total
+    type: counter
+    help: Total network connections from containers
+    labels: [container_id, dest_ip, dest_port]
+    
+  - name: active_containers
+    type: gauge
+    help: Current number of active containers
+    labels: []
+
+filters:
+  - name: starts_per_minute
+    expression: per_minute(container_starts_total)
+    
+  - name: connections_per_second
+    expression: rate(network_connections_total[1m])
+    
+  - name: active_containers_avg
+    expression: avg(active_containers)
