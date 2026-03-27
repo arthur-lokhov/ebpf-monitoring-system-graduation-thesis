@@ -27,13 +27,41 @@ services:
     restart: unless-stopped
     volumes:
       - ./garage/data:/garage-data
-      - ./garage/config.toml:/etc/garage.toml:ro
+      - ./garage/config.toml:/etc/garage/config.toml:ro
     command: ["/garage", "server"]
     healthcheck:
       test: ["CMD", "/garage", "status", "--format", "json"]
       interval: 10s
       timeout: 5s
       retries: 3
+
+  # epbf-monitoring server
+  epbf-monitor:
+    build:
+      context: ..
+      dockerfile: build/docker/runtime.Dockerfile
+    container_name: epbf-monitor-server
+    ports:
+      - "8080:8080"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: epbf
+      DB_PASSWORD: epbf_password
+      DB_NAME: epbf
+      S3_ENDPOINT: http://127.0.0.1:3900
+      S3_REGION: garage
+      S3_BUCKET: epbf-plugins
+      ENABLE_DOCKER: "true"
+      BUILD_DIR: /tmp/epbf-builds
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/epbf-builds:/tmp/epbf-builds
+      - ../plugins:/workspace/plugins
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   postgres_data:

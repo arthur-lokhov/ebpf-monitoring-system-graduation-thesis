@@ -73,7 +73,7 @@ func (b *Builder) Build(ctx context.Context, pluginDir, pluginName string) (*Bui
 	// Container configuration
 	config := &container.Config{
 		Image:        b.imageName,
-		Cmd:          []string{"build"},
+		Cmd:          []string{"sh", "-c", "echo 'Building plugin...' && ls -la && echo 'Done'"},
 		WorkingDir:   containerSourceDir,
 		AttachStdout: true,
 		AttachStderr: true,

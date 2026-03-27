@@ -12,16 +12,8 @@
 # Garage S3 data
 deployments/garage/data/
 
-# Go
-/bin
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-*.test
-*.out
-/go.sum
+# Go binaries
+/epbf-monitor
 
 # Node
 node_modules/

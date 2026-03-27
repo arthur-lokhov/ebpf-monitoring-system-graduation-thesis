@@ -90,7 +90,10 @@ func (s *Service) LoadPlugin(ctx context.Context, gitURL, ref string) (*pg.Plugi
 	}
 
 	// Start async build
-	go s.buildPlugin(ctx, plugin.ID, gitURL, ref)
+	go func() {
+		bgCtx := context.Background()
+		s.buildPlugin(bgCtx, plugin.ID, gitURL, ref)
+	}()
 
 	return plugin, nil
 }
