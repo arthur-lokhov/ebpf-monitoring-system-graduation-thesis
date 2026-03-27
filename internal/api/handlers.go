@@ -5,21 +5,25 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/epbf-monitoring/epbf-monitor/internal/plugin"
+	pg "github.com/epbf-monitoring/epbf-monitor/internal/storage/postgres"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
 
 // Handlers holds API handlers dependencies
 type Handlers struct {
-	// TODO: Add dependencies
-	// PluginService  *plugin.Service
-	// MetricsService *metrics.Service
-	// FilterService  *filter.Service
+	PluginService *plugin.Service
 }
 
 // NewHandlers creates new API handlers
 func NewHandlers() *Handlers {
 	return &Handlers{}
+}
+
+// SetPluginService sets the plugin service
+func (h *Handlers) SetPluginService(s *plugin.Service) {
+	h.PluginService = s
 }
 
 // Response helpers
@@ -56,6 +60,7 @@ func (h *Handlers) Health(w http.ResponseWriter, r *http.Request) {
 	response := map[string]interface{}{
 		"status":    "ok",
 		"timestamp": time.Now().UTC(),
+		"version":   "0.1.0",
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -73,13 +78,34 @@ func (h *Handlers) Metrics(w http.ResponseWriter, r *http.Request) {
 // Plugin handlers
 
 func (h *Handlers) ListPlugins(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement
-	plugins := []map[string]interface{}{}
+	if h.PluginService == nil {
+		writeSuccess(w, []interface{}{})
+		return
+	}
+
+	// Get optional status filter
+	statusParam := r.URL.Query().Get("status")
+	var status *pg.PluginStatus
+	if statusParam != "" {
+		s := pg.PluginStatus(statusParam)
+		status = &s
+	}
+
+	plugins, err := h.PluginService.ListPlugins(r.Context(), status)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
 	writeSuccess(w, plugins)
 }
 
 func (h *Handlers) AddPlugin(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement
+	if h.PluginService == nil {
+		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "Plugin service not initialized")
+		return
+	}
+
 	var req struct {
 		GitURL string `json:"git_url"`
 		Ref    string `json:"ref,omitempty"`
@@ -95,16 +121,21 @@ func (h *Handlers) AddPlugin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Add plugin logic
-	plugin := map[string]interface{}{
-		"status":  "pending",
-		"git_url": req.GitURL,
+	plugin, err := h.PluginService.LoadPlugin(r.Context(), req.GitURL, req.Ref)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
 	}
 
 	writeJSON(w, http.StatusCreated, plugin)
 }
 
 func (h *Handlers) GetPlugin(w http.ResponseWriter, r *http.Request) {
+	if h.PluginService == nil {
+		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "Plugin service not initialized")
+		return
+	}
+
 	idStr := chi.URLParam(r, "id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
@@ -112,17 +143,52 @@ func (h *Handlers) GetPlugin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Get plugin by ID
-	_ = id
+	plugin, err := h.PluginService.GetPlugin(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 
-	writeSuccess(w, map[string]interface{}{
-		"id":     id.String(),
-		"name":   "example-plugin",
-		"status": "ready",
-	})
+	if plugin == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Plugin not found")
+		return
+	}
+
+	writeSuccess(w, plugin)
+}
+
+func (h *Handlers) GetPluginByName(w http.ResponseWriter, r *http.Request) {
+	if h.PluginService == nil {
+		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "Plugin service not initialized")
+		return
+	}
+
+	name := chi.URLParam(r, "name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "missing_field", "name is required")
+		return
+	}
+
+	plugin, err := h.PluginService.GetPluginByName(r.Context(), name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
+	if plugin == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Plugin not found")
+		return
+	}
+
+	writeSuccess(w, plugin)
 }
 
 func (h *Handlers) DeletePlugin(w http.ResponseWriter, r *http.Request) {
+	if h.PluginService == nil {
+		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "Plugin service not initialized")
+		return
+	}
+
 	idStr := chi.URLParam(r, "id")
 	_, err := uuid.Parse(idStr)
 	if err != nil {
@@ -130,22 +196,34 @@ func (h *Handlers) DeletePlugin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Delete plugin
+	// TODO: Implement delete
+	// if err := h.PluginService.DeletePlugin(r.Context(), id); err != nil {
+	// 	writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+	// 	return
+	// }
 
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handlers) RebuildPlugin(w http.ResponseWriter, r *http.Request) {
+	if h.PluginService == nil {
+		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "Plugin service not initialized")
+		return
+	}
+
 	idStr := chi.URLParam(r, "id")
-	_, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(idStr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_id", "Invalid plugin ID")
 		return
 	}
 
-	// TODO: Rebuild plugin
+	if err := h.PluginService.RebuildPlugin(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
 
-	writeSuccess(w, map[string]interface{}{
+	writeSuccess(w, map[string]string{
 		"status": "rebuilding",
 	})
 }
@@ -232,7 +310,7 @@ func (h *Handlers) UpdateDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccess(w, map[string]interface{}{
+	writeSuccess(w, map[string]string{
 		"status": "updated",
 	})
 }

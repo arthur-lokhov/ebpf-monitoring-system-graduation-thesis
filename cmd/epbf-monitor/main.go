@@ -11,7 +11,8 @@ import (
 	"time"
 
 	"github.com/epbf-monitoring/epbf-monitor/internal/api"
-	"github.com/epbf-monitoring/epbf-monitor/internal/storage/postgres"
+	"github.com/epbf-monitoring/epbf-monitor/internal/plugin"
+	pg "github.com/epbf-monitoring/epbf-monitor/internal/storage/postgres"
 	"github.com/epbf-monitoring/epbf-monitor/internal/storage/s3"
 )
 
@@ -24,8 +25,8 @@ func main() {
 
 	// Initialize database
 	log.Println("📦 Connecting to PostgreSQL...")
-	dbConfig := postgres.DefaultConfig()
-	
+	dbConfig := pg.DefaultConfig()
+
 	// Override with env vars if present
 	if host := os.Getenv("DB_HOST"); host != "" {
 		dbConfig.Host = host
@@ -43,7 +44,7 @@ func main() {
 		dbConfig.Database = database
 	}
 
-	db, err := postgres.NewClient(dbConfig)
+	db, err := pg.NewClient(dbConfig)
 	if err != nil {
 		log.Printf("⚠️  Database connection failed: %v (running without database)", err)
 		db = nil
@@ -69,22 +70,62 @@ func main() {
 		s3Config.BucketName = bucket
 	}
 
-	_, err = s3.NewClient(s3Config)
+	s3Client, err := s3.NewClient(s3Config)
 	if err != nil {
 		log.Printf("⚠️  S3 connection failed: %v (running without object storage)", err)
+		s3Client = nil
 	} else {
 		log.Println("✅ Connected to S3")
 	}
 
-	// TODO: Initialize services
-	// - Plugin service
-	// - Metrics service
-	// - Filter service
-	// - WASM runtime
-	// - eBPF loader
+	// Initialize repositories
+	var pluginRepo *pg.PluginRepo
+	var pluginStorage *s3.PluginStorage
+
+	if db != nil {
+		pluginRepo = pg.NewPluginRepo(db)
+		log.Println("✅ Plugin repository initialized")
+	}
+
+	if s3Client != nil {
+		pluginStorage = s3.NewPluginStorage(s3Client)
+		log.Println("✅ Plugin storage initialized")
+	}
+
+	// Initialize plugin service
+	var pluginService *plugin.Service
+	if pluginRepo != nil && pluginStorage != nil {
+		buildDir := os.Getenv("BUILD_DIR")
+		if buildDir == "" {
+			buildDir = "/tmp/epbf-builds"
+		}
+
+		builderImage := os.Getenv("BUILDER_IMAGE")
+		if builderImage == "" {
+			builderImage = "epbf-monitor-builder:latest"
+		}
+
+		enableDocker := os.Getenv("ENABLE_DOCKER") != "false"
+
+		pluginService, err = plugin.NewService(
+			pluginRepo,
+			pluginStorage,
+			plugin.Config{
+				BuildDir:     buildDir,
+				BuilderImage: builderImage,
+				EnableDocker: enableDocker,
+			},
+		)
+		if err != nil {
+			log.Printf("⚠️  Plugin service initialization failed: %v", err)
+		} else {
+			log.Println("✅ Plugin service initialized")
+		}
+	}
 
 	// Initialize API handlers
 	handlers := api.NewHandlers()
+	handlers.SetPluginService(pluginService)
 
 	// Setup router
 	router := api.NewRouter()
@@ -109,7 +150,7 @@ func main() {
 		log.Printf("📊 Health: http://localhost:%s/health", port)
 		log.Printf("📈 Metrics: http://localhost:%s/metrics", port)
 		log.Printf("🔌 API: http://localhost:%s/api/v1", port)
-		
+
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("❌ Server failed: %v", err)
 		}

@@ -14,6 +14,8 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
@@ -111,16 +113,16 @@ func (b *Builder) Build(ctx context.Context, pluginDir, pluginName string) (*Bui
 
 	// Ensure container removal
 	defer func() {
-		_ = b.dockerClient.ContainerRemove(ctx, resp.ID, types.ContainerRemoveOptions{Force: true})
+		_ = b.dockerClient.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 	}()
 
 	// Start container
-	if err := b.dockerClient.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{}); err != nil {
+	if err := b.dockerClient.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		return nil, fmt.Errorf("failed to start container: %w", err)
 	}
 
 	// Get logs
-	logsReader, err := b.dockerClient.ContainerLogs(ctx, resp.ID, types.ContainerLogsOptions{
+	logsReader, err := b.dockerClient.ContainerLogs(ctx, resp.ID, container.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Follow:     true,
@@ -217,10 +219,8 @@ type ContainerInfo struct {
 
 // ListBuilderImages lists available builder images
 func (b *Builder) ListBuilderImages(ctx context.Context) ([]string, error) {
-	images, err := b.dockerClient.ImageList(ctx, types.ImageListOptions{
-		Filters: map[string][]string{
-			"reference": {"epbf-monitor-builder:*"},
-		},
+	images, err := b.dockerClient.ImageList(ctx, image.ListOptions{
+		Filters: filters.NewArgs(filters.Arg("reference", "epbf-monitor-builder:*")),
 	})
 	if err != nil {
 		return nil, err
@@ -238,7 +238,7 @@ func (b *Builder) ListBuilderImages(ctx context.Context) ([]string, error) {
 
 // PullBuilderImage pulls the builder image
 func (b *Builder) PullBuilderImage(ctx context.Context) error {
-	reader, err := b.dockerClient.ImagePull(ctx, b.imageName, types.ImagePullOptions{})
+	reader, err := b.dockerClient.ImagePull(ctx, b.imageName, image.PullOptions{})
 	if err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 )
@@ -17,10 +18,10 @@ type Verifier struct {
 
 // VerificationResult holds verification results
 type VerificationResult struct {
-	Valid       bool
-	Errors      []string
-	Warnings    []string
-	Info        VerifierInfo
+	Valid    bool
+	Errors   []string
+	Warnings []string
+	Info     VerifierInfo
 }
 
 // VerifierInfo holds program information
@@ -43,8 +44,8 @@ func NewVerifier() *Verifier {
 // Verify validates an eBPF object file
 func (v *Verifier) Verify(ctx context.Context, objectFile string) (*VerificationResult, error) {
 	result := &VerificationResult{
-		Valid:  true,
-		Errors: []string{},
+		Valid:    true,
+		Errors:   []string{},
 		Warnings: []string{},
 	}
 
@@ -89,7 +90,7 @@ func (v *Verifier) verifyWithBpftool(ctx context.Context, objectFile string, res
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		outputStr := string(output)
-		
+
 		// Check for specific errors
 		if strings.Contains(outputStr, "Error") {
 			result.Valid = false
@@ -124,7 +125,7 @@ func (v *Verifier) basicChecks(objectFile string, result *VerificationResult) {
 	// Check for eBPF section
 	hasEBPFSection := false
 	sections := []string{".text", ".tracepoint", ".kprobe", ".kretprobe", ".uprobe", ".uretprobe", ".socket_filter"}
-	
+
 	for _, section := range sections {
 		if strings.Contains(string(data), section) {
 			hasEBPFSection = true
@@ -149,7 +150,7 @@ func (v *Verifier) parseBpftoolOutput(output string, result *VerificationResult)
 	// Count instructions
 	lines := strings.Split(output, "\n")
 	instructionCount := 0
-	
+
 	instructionPattern := regexp.MustCompile(`^\s*\d+:`)
 	for _, line := range lines {
 		if instructionPattern.MatchString(line) {

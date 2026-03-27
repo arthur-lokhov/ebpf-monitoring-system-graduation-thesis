@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -138,12 +139,12 @@ func extractPluginName(gitURL string) (string, error) {
 	}
 
 	// Remove user info (user@)
-	if idx := filepath.IndexByte(url, '@'); idx != -1 {
+	if idx := strings.IndexByte(url, '@'); idx != -1 {
 		url = url[idx+1:]
 	}
 
 	// Remove host
-	if idx := filepath.IndexByte(url, '/'); idx != -1 {
+	if idx := strings.IndexByte(url, '/'); idx != -1 {
 		url = url[idx+1:]
 	}
 
