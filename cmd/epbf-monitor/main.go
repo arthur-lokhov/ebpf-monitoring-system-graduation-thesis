@@ -11,6 +11,7 @@ import (
 
 	"github.com/epbf-monitoring/epbf-monitor/internal/api"
 	"github.com/epbf-monitoring/epbf-monitor/internal/logger"
+	"github.com/epbf-monitoring/epbf-monitor/internal/metrics"
 	"github.com/epbf-monitoring/epbf-monitor/internal/plugin"
 	"github.com/epbf-monitoring/epbf-monitor/internal/storage/postgres"
 	"github.com/epbf-monitoring/epbf-monitor/internal/storage/s3"
@@ -169,8 +170,13 @@ func main() {
 			"has_s3", pluginStorage != nil)
 	}
 
+	// Initialize metrics collector
+	metricsCollector := metrics.NewCollector()
+	logger.Info("✅ Metrics collector initialized")
+
 	// Initialize API handlers
 	handlers := api.NewHandlers()
+	handlers.SetMetrics(metricsCollector)
 	handlers.SetPluginService(pluginService)
 	logger.Info("🔌 API handlers initialized")
 
