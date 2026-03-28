@@ -58,9 +58,8 @@ func NewService(
 		return nil, fmt.Errorf("failed to create builder: %w", err)
 	}
 
-	// Create runtime manager - need to get s3.Client from PluginStorage
-	// For now, pass nil and we'll fix this later
-	runtimeManager, err := NewRuntime(nil, metricsCollector)
+	// Create runtime manager
+	runtimeManager, err := NewRuntime(storage, metricsCollector)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create runtime manager: %w", err)
 	}

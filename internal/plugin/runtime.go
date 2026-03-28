@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/epbf-monitoring/epbf-monitor/internal/logger"
@@ -33,7 +34,7 @@ type PluginRuntime struct {
 }
 
 // NewRuntime creates a new plugin runtime manager
-func NewRuntime(s3Client *s3.Client, metricsCollector *metrics.Collector) (*Runtime, error) {
+func NewRuntime(pluginStorage *s3.PluginStorage, metricsCollector *metrics.Collector) (*Runtime, error) {
 	logger.Info("Creating plugin runtime manager...")
 
 	// Create eBPF loader
@@ -45,6 +46,12 @@ func NewRuntime(s3Client *s3.Client, metricsCollector *metrics.Collector) (*Runt
 	// Create WASM engine and runner
 	wasmEngine := wasmruntime.NewEngine()
 	wasmRunner := wasmruntime.NewRunner(wasmEngine, "/tmp/epbf-builds")
+
+	// Get S3 client from PluginStorage
+	var s3Client *s3.Client
+	if pluginStorage != nil {
+		s3Client = pluginStorage.GetClient()
+	}
 
 	logger.Info("✅ Plugin runtime manager created")
 
@@ -62,28 +69,100 @@ func (r *Runtime) StartPlugin(ctx context.Context, pluginID uuid.UUID, name, ver
 	logger.Info("Starting plugin runtime",
 		"plugin_id", pluginID.String(),
 		"name", name,
-		"version", version)
+		"version", version,
+		"ebpf_key", ebpfS3Key,
+		"wasm_key", wasmS3Key)
 
-	// Download eBPF object - TODO: implement when s3.Client.Download is fixed
-	// For now, skip eBPF loading
+	var ebpfProgram *ebpf.Program
 
-	// Start WASM instance - TODO: load from S3
-	// For now, skip WASM loading
+	// Download and load eBPF program
+	if r.s3Client != nil && ebpfS3Key != "" {
+		ebpfBytes, err := r.downloadFromS3(ctx, ebpfS3Key)
+		if err != nil {
+			logger.Error("Failed to download eBPF object",
+				"plugin_id", pluginID.String(),
+				"key", ebpfS3Key,
+				"error", err.Error())
+		} else {
+			ebpfProgram, err = r.ebpfLoader.LoadProgram(ctx, pluginID, name, ebpfBytes, func(event ebpf.ContainerEvent) {
+				// Handle eBPF event
+				logger.Debug("eBPF event received",
+					"plugin_id", pluginID.String(),
+					"type", event.Type,
+					"pid", event.PID,
+					"comm", string(event.Comm[:]))
+
+				r.metrics.EBPFEventReceived(name, fmt.Sprintf("type_%d", event.Type))
+			})
+			if err != nil {
+				logger.Error("Failed to load eBPF program",
+					"plugin_id", pluginID.String(),
+					"error", err.Error())
+			} else {
+				logger.Info("✅ eBPF program loaded",
+					"plugin_id", pluginID.String(),
+					"name", name)
+				r.metrics.EBPFProgramLoaded(name)
+			}
+		}
+	}
+
+	// Download and start WASM instance
+	if r.s3Client != nil && wasmS3Key != "" {
+		wasmBytes, err := r.downloadFromS3(ctx, wasmS3Key)
+		if err != nil {
+			logger.Error("Failed to download WASM module",
+				"plugin_id", pluginID.String(),
+				"key", wasmS3Key,
+				"error", err.Error())
+		} else {
+			err = r.wasmRunner.StartPlugin(ctx, pluginID, name, wasmBytes)
+			if err != nil {
+				logger.Error("Failed to start WASM plugin",
+					"plugin_id", pluginID.String(),
+					"error", err.Error())
+			} else {
+				logger.Info("✅ WASM plugin started",
+					"plugin_id", pluginID.String(),
+					"name", name)
+				r.metrics.WASMInstanceStarted(name)
+			}
+		}
+	}
 
 	// Store runtime state
 	r.pluginRuntimes[pluginID] = &PluginRuntime{
-		ID:        pluginID,
-		Name:      name,
-		Version:   version,
-		StartedAt: time.Now(),
-		Enabled:   true,
+		ID:          pluginID,
+		Name:        name,
+		Version:     version,
+		EBPFProgram: ebpfProgram,
+		StartedAt:   time.Now(),
+		Enabled:     true,
 	}
 
-	logger.Info("✅ Plugin runtime started (placeholder)",
+	logger.Info("✅ Plugin runtime started",
 		"plugin_id", pluginID.String(),
-		"name", name)
+		"has_ebpf", ebpfProgram != nil,
+		"has_wasm", true)
 
 	return nil
+}
+
+// downloadFromS3 downloads a file from S3
+func (r *Runtime) downloadFromS3(ctx context.Context, key string) ([]byte, error) {
+	reader, err := r.s3Client.Download(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read S3 object: %w", err)
+	}
+
+	logger.Debug("Downloaded from S3", "key", key, "size", len(data))
+	return data, nil
 }
 
 // StopPlugin stops a plugin's runtime

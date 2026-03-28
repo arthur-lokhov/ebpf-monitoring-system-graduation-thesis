@@ -42,6 +42,16 @@ type Client struct {
 	config *Config
 }
 
+// GetClient returns the underlying S3 client
+func (c *Client) GetClient() *s3.Client {
+	return c.client
+}
+
+// GetConfig returns the S3 configuration
+func (c *Client) GetConfig() *Config {
+	return c.config
+}
+
 // NewClient creates a new S3 client
 func NewClient(cfg *Config) (*Client, error) {
 	if cfg == nil {
@@ -239,6 +249,11 @@ type PluginStorage struct {
 func NewPluginStorage(client *Client) *PluginStorage {
 	logger.Info("Plugin storage initialized", "bucket", client.config.BucketName)
 	return &PluginStorage{client: client}
+}
+
+// GetClient returns the underlying S3 client
+func (s *PluginStorage) GetClient() *Client {
+	return s.client
 }
 
 // UploadEBPF uploads eBPF object file
