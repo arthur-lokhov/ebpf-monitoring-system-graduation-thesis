@@ -1,9 +1,9 @@
-FROM golang:1.25-alpine AS builder
+FROM golang:1.25-bookworm AS builder
 
 WORKDIR /app
 
 # Install build dependencies (gcc required for wasmtime-go CGO)
-RUN apk add --no-cache git gcc musl-dev
+RUN apt-get update && apt-get install -y --no-install-recommends git gcc libc6-dev && rm -rf /var/lib/apt/lists/*
 
 # Copy go mod files
 COPY go.mod go.sum ./
@@ -18,12 +18,12 @@ COPY . .
 RUN CGO_ENABLED=1 GOOS=linux go build -o /epbf-monitor ./cmd/epbf-monitor
 
 # Runtime image
-FROM alpine:3.18
+FROM golang:1.25-bookworm
 
 WORKDIR /app
 
 # Install ca-certificates for HTTPS, docker-cli for building, and git for cloning plugins
-RUN apk --no-cache add ca-certificates curl docker-cli git
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl docker.io git && rm -rf /var/lib/apt/lists/*
 
 # Copy binary
 COPY --from=builder /epbf-monitor /app/epbf-monitor

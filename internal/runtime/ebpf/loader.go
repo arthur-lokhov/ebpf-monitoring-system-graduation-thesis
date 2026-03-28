@@ -48,9 +48,11 @@ type Loader struct {
 func NewLoader() (*Loader, error) {
 	logger.Info("Creating eBPF loader...")
 	
-	// Remove resource limits for eBPF
+	// Remove resource limits for eBPF (may fail in Docker without privileged mode)
 	if err := rlimit.RemoveMemlock(); err != nil {
-		logger.Warn("Failed to remove memlock limit", "error", err.Error())
+		// This is expected in Docker containers without CAP_SYS_RESOURCE
+		// eBPF will still work for small programs
+		logger.Debug("Memlock limit not removed (expected in Docker)", "error", err.Error())
 	}
 	
 	logger.Info("✅ eBPF loader created")
