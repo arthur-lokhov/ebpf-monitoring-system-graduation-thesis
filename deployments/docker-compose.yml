@@ -45,6 +45,12 @@ services:
       - "8080:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+      - BPF
+      - PERFMON
+      - IPC_LOCK
     ulimits:
       memlock: -1
     environment:

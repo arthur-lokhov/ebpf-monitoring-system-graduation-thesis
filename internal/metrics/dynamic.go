@@ -39,37 +39,68 @@ func (d *DynamicMetrics) RegisterPluginMetrics(pluginName, version string, manif
 	
 	logger.Info("Registering plugin metrics",
 		"plugin", pluginName,
-		"version", version)
+		"version", version,
+		"manifest_keys", getMapKeys(manifest))
 	
 	// Get metrics from manifest
 	metricsRaw, ok := manifest["metrics"]
 	if !ok {
-		logger.Warn("No metrics found in manifest", "plugin", pluginName)
+		logger.Warn("No 'metrics' key found in manifest", 
+			"plugin", pluginName,
+			"available_keys", getMapKeys(manifest))
 		return nil
 	}
+	
+	logger.Debug("Found metrics in manifest",
+		"plugin", pluginName,
+		"metrics_type", fmt.Sprintf("%T", metricsRaw),
+		"metrics_value", fmt.Sprintf("%+v", metricsRaw))
 	
 	// Convert to slice of maps
 	var metricsList []map[string]any
 	switch v := metricsRaw.(type) {
 	case []any:
-		for _, m := range v {
+		logger.Debug("Processing metrics as []any",
+			"plugin", pluginName,
+			"count", len(v))
+		for i, m := range v {
+			logger.Debug("Processing metric",
+				"plugin", pluginName,
+				"index", i,
+				"type", fmt.Sprintf("%T", m),
+				"value", fmt.Sprintf("%+v", m))
 			if mMap, ok := m.(map[string]any); ok {
 				metricsList = append(metricsList, mMap)
+			} else {
+				logger.Warn("Metric item is not a map",
+					"plugin", pluginName,
+					"index", i,
+					"type", fmt.Sprintf("%T", m))
 			}
 		}
 	case []map[string]any:
+		logger.Debug("Processing metrics as []map[string]any",
+			"plugin", pluginName,
+			"count", len(v))
 		metricsList = v
 	default:
-		logger.Warn("Invalid metrics format in manifest", 
+		logger.Error("Invalid metrics format in manifest", 
 			"plugin", pluginName, 
-			"type", fmt.Sprintf("%T", metricsRaw))
-		return nil
+			"type", fmt.Sprintf("%T", metricsRaw),
+			"value", fmt.Sprintf("%+v", metricsRaw))
+		return fmt.Errorf("invalid metrics format: %T", metricsRaw)
 	}
 	
 	if len(metricsList) == 0 {
-		logger.Warn("No valid metrics found in manifest", "plugin", pluginName)
+		logger.Warn("No valid metrics found in manifest", 
+			"plugin", pluginName,
+			"metrics_list", fmt.Sprintf("%+v", metricsList))
 		return nil
 	}
+	
+	logger.Info("Processing metrics",
+		"plugin", pluginName,
+		"count", len(metricsList))
 	
 	pm := &PluginMetrics{
 		Name:       pluginName,
@@ -78,15 +109,26 @@ func (d *DynamicMetrics) RegisterPluginMetrics(pluginName, version string, manif
 	}
 	
 	for i, metricMap := range metricsList {
+		logger.Debug("Processing metric map",
+			"plugin", pluginName,
+			"index", i,
+			"map", fmt.Sprintf("%+v", metricMap))
+		
 		name, ok := metricMap["name"].(string)
 		if !ok {
-			logger.Warn("Metric missing name", "plugin", pluginName, "index", i)
+			logger.Warn("Metric missing 'name' field", 
+				"plugin", pluginName, 
+				"index", i,
+				"name_field", fmt.Sprintf("%T", metricMap["name"]))
 			continue
 		}
 		
 		metricType, ok := metricMap["type"].(string)
 		if !ok {
-			logger.Warn("Metric missing type", "plugin", pluginName, "name", name)
+			logger.Warn("Metric missing 'type' field", 
+				"plugin", pluginName, 
+				"name", name,
+				"type_field", fmt.Sprintf("%T", metricMap["type"]))
 			continue
 		}
 		
@@ -172,9 +214,27 @@ func (d *DynamicMetrics) RegisterPluginMetrics(pluginName, version string, manif
 	
 	logger.Info("✅ Plugin metrics registered",
 		"plugin", pluginName,
-		"count", len(pm.Collectors))
+		"count", len(pm.Collectors),
+		"registered_metrics", getCollectorNames(pm.Collectors))
 	
 	return nil
+}
+
+// Helper functions for debugging
+func getMapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+func getCollectorNames(collectors map[string]prometheus.Collector) []string {
+	names := make([]string, 0, len(collectors))
+	for name := range collectors {
+		names = append(names, name)
+	}
+	return names
 }
 
 // GetCounter returns a counter metric for a plugin
