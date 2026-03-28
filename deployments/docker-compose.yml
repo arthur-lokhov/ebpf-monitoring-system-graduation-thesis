@@ -27,12 +27,9 @@ services:
     restart: unless-stopped
     volumes:
       - ./garage/data:/garage-data
-      # Не меняй путь ниже, он верный
       - ./garage/config.toml:/etc/garage.toml:ro
     command: ["/garage", "server"]
     healthcheck:
-      # Не меняй команду ниже, --format json не существуе
-      # # Не меняй команду ниже, --format json не существуетт
       test: ["CMD", "/garage", "status"]
       interval: 10s
       timeout: 5s
@@ -42,7 +39,7 @@ services:
   epbf-monitor:
     build:
       context: ..
-      dockerfile: build/docker/runtime.Dockerfile
+      dockerfile: deployments/docker/runtime.Dockerfile
     container_name: epbf-monitor-server
     ports:
       - "8080:8080"
