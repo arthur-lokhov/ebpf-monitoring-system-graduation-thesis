@@ -393,8 +393,16 @@ func manifestToMap(m *Manifest) map[string]any {
 				"type": metric.Type,
 				"help": metric.Help,
 			}
+			// Debug: log labels before conversion
+			fmt.Printf("DEBUG: metric %s has labels: %+v (type: %T)\n", metric.Name, metric.Labels, metric.Labels)
 			if len(metric.Labels) > 0 {
-				metricMap["labels"] = metric.Labels
+				// Copy labels slice
+				labelsCopy := make([]string, len(metric.Labels))
+				copy(labelsCopy, metric.Labels)
+				metricMap["labels"] = labelsCopy
+				fmt.Printf("DEBUG: copied labels: %+v\n", labelsCopy)
+			} else {
+				fmt.Printf("DEBUG: metric %s has NO labels\n", metric.Name)
 			}
 			metrics[i] = metricMap
 		}
