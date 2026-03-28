@@ -2,19 +2,20 @@ FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
-# Install git for fetching dependencies
-RUN apk add --no-cache git
+# Install build dependencies (gcc required for wasmtime-go CGO)
+RUN apk add --no-cache git gcc musl-dev
 
 # Copy go mod files
 COPY go.mod go.sum ./
 ENV GOTOOLCHAIN=auto
 RUN go mod download
+RUN go mod verify
 
 # Copy source code
 COPY . .
 
-# Build
-RUN CGO_ENABLED=0 GOOS=linux go build -o /epbf-monitor ./cmd/epbf-monitor
+# Build with CGO enabled (required for wasmtime-go)
+RUN CGO_ENABLED=1 GOOS=linux go build -o /epbf-monitor ./cmd/epbf-monitor
 
 # Runtime image
 FROM alpine:3.18
