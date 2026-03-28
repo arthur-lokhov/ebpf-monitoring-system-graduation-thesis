@@ -222,10 +222,37 @@ func (d *DynamicMetrics) RegisterPluginMetrics(pluginName, version string, manif
 			continue
 		}
 		
+		// Initialize metric with zero value (so it appears in /metrics)
+		switch c := collector.(type) {
+		case *prometheus.CounterVec:
+			// Create empty labels map for initialization
+			if len(labels) == 0 {
+				c.WithLabelValues().Add(0)
+			}
+		case *prometheus.GaugeVec:
+			if len(labels) == 0 {
+				c.WithLabelValues().Set(0)
+			}
+		}
+		
 		pm.Collectors[name] = collector
 	}
 	
 	d.pluginMetrics[pluginName] = pm
+	
+	// Debug: list all registered collectors
+	mfs, err := d.registry.Gather()
+	if err != nil {
+		logger.Error("Failed to gather metrics", "error", err.Error())
+	} else {
+		for _, mf := range mfs {
+			if mf.GetName() != "" && len(mf.GetMetric()) > 0 {
+				logger.Debug("Registry contains metric",
+					"name", mf.GetName(),
+					"count", len(mf.GetMetric()))
+			}
+		}
+	}
 	
 	logger.Info("✅ Plugin metrics registered",
 		"plugin", pluginName,

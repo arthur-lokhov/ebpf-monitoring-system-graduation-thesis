@@ -46,8 +46,10 @@ func (h *Handlers) Metrics(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Metrics collector not initialized", http.StatusServiceUnavailable)
 		return
 	}
-	
-	handler := promhttp.HandlerFor(h.MetricsCollector.Registry(), promhttp.HandlerOpts{})
+
+	handler := promhttp.HandlerFor(h.MetricsCollector.Registry(), promhttp.HandlerOpts{
+		EnableOpenMetrics: true,
+	})
 	handler.ServeHTTP(w, r)
 }
 
