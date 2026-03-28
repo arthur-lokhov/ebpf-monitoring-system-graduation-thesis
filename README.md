@@ -329,8 +329,8 @@ make test
 
 ```bash
 # Сборка образов
-make docker-build-builder
-make docker-build-runtime
+docker build -f deployments/docker/builder.Dockerfile -t epbf-monitor-builder:latest .
+docker build -f deployments/docker/runtime.Dockerfile -t epbf-monitor-runtime:latest .
 
 # Запуск
 docker-compose -f deployments/docker-compose.yml up
