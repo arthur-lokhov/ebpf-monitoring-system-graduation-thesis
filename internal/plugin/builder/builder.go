@@ -131,13 +131,9 @@ else
     exit 1
 fi
 
-# Copy to output directory
-echo "📊 Copying build artifacts..."
-cp /tmp/epbf-build-output/program.o /workspace/plugin/build/program.o
-cp /tmp/epbf-build-output/plugin.wasm /workspace/plugin/build/plugin.wasm
-
+# Copy artifacts to temp directory (docker cp will copy to host)
 echo "📊 Build artifacts:"
-ls -lh /workspace/plugin/build/
+ls -lh /tmp/epbf-build-output/
 echo "✅ Build complete!"
 `
 
@@ -157,13 +153,13 @@ echo "✅ Build complete!"
 	}
 
 	hostConfig := &container.HostConfig{
-		AutoRemove: true,
+		AutoRemove: false, // Need to keep container alive for docker cp
 		Mounts: []mount.Mount{
 			{
 				Type:     mount.TypeBind,
 				Source:   hostSourceDir,
 				Target:   containerSourceDir,
-				ReadOnly: true,
+				ReadOnly: false,
 			},
 		},
 		Resources: container.Resources{
@@ -212,7 +208,10 @@ echo "✅ Build complete!"
 		if err != nil {
 			result.Success = false
 			result.BuildLog = logBuffer.String()
-			return result, fmt.Errorf("container wait error: %w", err)
+			return result, &BuildError{
+				error:    fmt.Errorf("container wait error: %w", err),
+				BuildLog: logBuffer.String(),
+			}
 		}
 	case status := <-statusCh:
 		result.BuildLog = logBuffer.String()
@@ -227,23 +226,43 @@ echo "✅ Build complete!"
 		}
 	}
 
-	// Check output files
+	// Copy artifacts from container using docker cp (avoids macOS bind mount issues)
 	ebpfFile := filepath.Join(outputDir, "program.o")
 	wasmFile := filepath.Join(outputDir, "plugin.wasm")
 
-	if _, err := os.Stat(ebpfFile); os.IsNotExist(err) {
-		result.Success = false
-		return result, fmt.Errorf("eBPF object not found: %s", ebpfFile)
+	// Ensure output directory exists
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return result, &BuildError{error: fmt.Errorf("failed to create output directory: %w", err), BuildLog: logBuffer.String()}
 	}
 
-	if _, err := os.Stat(wasmFile); os.IsNotExist(err) {
+	// Copy eBPF object
+	ebpfData, err := copyFromContainer(ctx, b.dockerClient, resp.ID, "/tmp/epbf-build-output/program.o")
+	if err != nil {
 		result.Success = false
-		return result, fmt.Errorf("WASM module not found: %s", wasmFile)
+		return result, &BuildError{error: fmt.Errorf("failed to copy eBPF from container: %w", err), BuildLog: logBuffer.String()}
+	}
+	if err := os.WriteFile(ebpfFile, ebpfData, 0644); err != nil {
+		result.Success = false
+		return result, &BuildError{error: fmt.Errorf("failed to write eBPF file: %w", err), BuildLog: logBuffer.String()}
+	}
+
+	// Copy WASM module
+	wasmData, err := copyFromContainer(ctx, b.dockerClient, resp.ID, "/tmp/epbf-build-output/plugin.wasm")
+	if err != nil {
+		result.Success = false
+		return result, &BuildError{error: fmt.Errorf("failed to copy WASM from container: %w", err), BuildLog: logBuffer.String()}
+	}
+	if err := os.WriteFile(wasmFile, wasmData, 0644); err != nil {
+		result.Success = false
+		return result, &BuildError{error: fmt.Errorf("failed to write WASM file: %w", err), BuildLog: logBuffer.String()}
 	}
 
 	result.Success = true
 	result.EBPFFile = ebpfFile
 	result.WASMFile = wasmFile
+
+	// Cleanup container
+	_ = b.dockerClient.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 
 	return result, nil
 }
@@ -413,4 +432,22 @@ func extractTarContent(tarData []byte) []byte {
 		return tarData
 	}
 	return content
+}
+
+// copyFromContainer copies a file from a Docker container and returns its content
+func copyFromContainer(ctx context.Context, client *client.Client, containerID, path string) ([]byte, error) {
+	reader, _, err := client.CopyFromContainer(ctx, containerID, path)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	// Read tar archive
+	tarData, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract file content from tar
+	return extractTarContent(tarData), nil
 }
