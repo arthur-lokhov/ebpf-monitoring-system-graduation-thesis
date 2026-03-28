@@ -65,13 +65,22 @@ func NewRuntime(pluginStorage *s3.PluginStorage, metricsCollector *metrics.Colle
 }
 
 // StartPlugin starts a plugin's eBPF and WASM components
-func (r *Runtime) StartPlugin(ctx context.Context, pluginID uuid.UUID, name, version, ebpfS3Key, wasmS3Key string) error {
+func (r *Runtime) StartPlugin(ctx context.Context, pluginID uuid.UUID, name, version, ebpfS3Key, wasmS3Key string, manifest map[string]any) error {
 	logger.Info("Starting plugin runtime",
 		"plugin_id", pluginID.String(),
 		"name", name,
 		"version", version,
 		"ebpf_key", ebpfS3Key,
 		"wasm_key", wasmS3Key)
+
+	// Register dynamic metrics from manifest
+	if manifest != nil {
+		if err := r.metrics.DynamicMetrics().RegisterPluginMetrics(name, version, manifest); err != nil {
+			logger.Error("Failed to register plugin metrics",
+				"plugin_id", pluginID.String(),
+				"error", err.Error())
+		}
+	}
 
 	var ebpfProgram *ebpf.Program
 

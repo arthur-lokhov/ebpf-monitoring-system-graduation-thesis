@@ -199,7 +199,7 @@ func (s *Service) buildPlugin(ctx context.Context, pluginID uuid.UUID, gitURL, r
 	}
 
 	// Start plugin runtime
-	if err := s.runtime.StartPlugin(ctx, pluginID, loadResult.Manifest.Name, loadResult.Manifest.Version, ebpfKey, wasmKey); err != nil {
+	if err := s.runtime.StartPlugin(ctx, pluginID, loadResult.Manifest.Name, loadResult.Manifest.Version, ebpfKey, wasmKey, manifestToMap(loadResult.Manifest)); err != nil {
 		logger.Error("Failed to start plugin runtime",
 			"plugin_id", pluginID.String(),
 			"error", err.Error())

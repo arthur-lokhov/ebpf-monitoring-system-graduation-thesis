@@ -7,17 +7,18 @@ import (
 
 // Collector wraps Prometheus registry and collectors
 type Collector struct {
-	registry *prometheus.Registry
-	
+	registry       *prometheus.Registry
+	dynamicMetrics *DynamicMetrics
+
 	// Plugin metrics
 	pluginBuildsTotal   *prometheus.CounterVec
 	pluginBuildDuration *prometheus.HistogramVec
 	pluginStatus        *prometheus.GaugeVec
-	
+
 	// eBPF metrics
 	ebpfProgramsLoaded  *prometheus.GaugeVec
 	ebpfEventsReceived  *prometheus.CounterVec
-	
+
 	// WASM metrics
 	wasmInstancesActive *prometheus.GaugeVec
 	wasmEventsProcessed *prometheus.CounterVec
@@ -26,20 +27,23 @@ type Collector struct {
 // NewCollector creates a new Prometheus metrics collector
 func NewCollector() *Collector {
 	logger.Info("Creating Prometheus metrics collector...")
-	
+
 	registry := prometheus.NewRegistry()
-	
+
 	c := &Collector{
 		registry: registry,
 	}
-	
+
+	// Create dynamic metrics manager
+	c.dynamicMetrics = NewDynamicMetrics(registry)
+
 	// Register default collectors (Go runtime, process)
 	registry.MustRegister(prometheus.NewGoCollector())
 	registry.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
-	
+
 	// Define custom metrics
 	c.defineMetrics()
-	
+
 	// Register custom metrics
 	registry.MustRegister(
 		c.pluginBuildsTotal,
@@ -50,10 +54,20 @@ func NewCollector() *Collector {
 		c.wasmInstancesActive,
 		c.wasmEventsProcessed,
 	)
-	
+
 	logger.Info("✅ Prometheus metrics collector created")
-	
+
 	return c
+}
+
+// Registry returns the Prometheus registry
+func (c *Collector) Registry() *prometheus.Registry {
+	return c.registry
+}
+
+// DynamicMetrics returns the dynamic metrics manager
+func (c *Collector) DynamicMetrics() *DynamicMetrics {
+	return c.dynamicMetrics
 }
 
 // defineMetrics defines all custom metrics
@@ -68,7 +82,7 @@ func (c *Collector) defineMetrics() {
 		},
 		[]string{"plugin", "status"}, // status: success, failure
 	)
-	
+
 	c.pluginBuildDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: "epbf",
@@ -79,7 +93,7 @@ func (c *Collector) defineMetrics() {
 		},
 		[]string{"plugin"},
 	)
-	
+
 	c.pluginStatus = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: "epbf",
@@ -89,7 +103,7 @@ func (c *Collector) defineMetrics() {
 		},
 		[]string{"plugin", "version"},
 	)
-	
+
 	// eBPF metrics
 	c.ebpfProgramsLoaded = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -100,7 +114,7 @@ func (c *Collector) defineMetrics() {
 		},
 		[]string{"plugin"},
 	)
-	
+
 	c.ebpfEventsReceived = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "epbf",
@@ -110,7 +124,7 @@ func (c *Collector) defineMetrics() {
 		},
 		[]string{"plugin", "event_type"},
 	)
-	
+
 	// WASM metrics
 	c.wasmInstancesActive = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -121,7 +135,7 @@ func (c *Collector) defineMetrics() {
 		},
 		[]string{"plugin"},
 	)
-	
+
 	c.wasmEventsProcessed = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "epbf",
@@ -143,7 +157,7 @@ func (c *Collector) PluginBuildSuccess(plugin, version string, duration float64)
 	c.pluginBuildsTotal.WithLabelValues(plugin, "success").Inc()
 	c.pluginBuildDuration.WithLabelValues(plugin).Observe(duration)
 	c.pluginStatus.WithLabelValues(plugin, version).Set(1)
-	
+
 	logger.Info("Metric: plugin build success",
 		"plugin", plugin,
 		"version", version,
@@ -155,7 +169,7 @@ func (c *Collector) PluginBuildFailure(plugin string, duration float64) {
 	c.pluginBuildsTotal.WithLabelValues(plugin, "failure").Inc()
 	c.pluginBuildDuration.WithLabelValues(plugin).Observe(duration)
 	c.pluginStatus.WithLabelValues(plugin, "failed").Set(0)
-	
+
 	logger.Warn("Metric: plugin build failure",
 		"plugin", plugin,
 		"duration", duration)
@@ -199,15 +213,10 @@ func (c *Collector) WASMEventProcessed(plugin string) {
 	logger.Debug("Metric: WASM event processed", "plugin", plugin)
 }
 
-// Registry returns the Prometheus registry
-func (c *Collector) Registry() *prometheus.Registry {
-	return c.registry
-}
-
 // RemovePluginMetrics removes all metrics for a plugin
 func (c *Collector) RemovePluginMetrics(plugin string) {
 	labels := prometheus.Labels{"plugin": plugin}
-	
+
 	c.pluginBuildsTotal.DeletePartialMatch(labels)
 	c.pluginBuildDuration.DeletePartialMatch(labels)
 	c.pluginStatus.DeletePartialMatch(labels)
@@ -215,6 +224,13 @@ func (c *Collector) RemovePluginMetrics(plugin string) {
 	c.ebpfEventsReceived.DeletePartialMatch(labels)
 	c.wasmInstancesActive.DeletePartialMatch(labels)
 	c.wasmEventsProcessed.DeletePartialMatch(labels)
-	
+
+	// Unregister dynamic metrics
+	if err := c.dynamicMetrics.UnregisterPluginMetrics(plugin); err != nil {
+		logger.Error("Failed to unregister dynamic metrics",
+			"plugin", plugin,
+			"error", err.Error())
+	}
+
 	logger.Info("Removed plugin metrics", "plugin", plugin)
 }
