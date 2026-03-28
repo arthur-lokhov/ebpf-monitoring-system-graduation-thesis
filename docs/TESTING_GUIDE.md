@@ -24,6 +24,12 @@ epbf-monitor-server   deployments-epbf-monitor   "/app/epbf-monitor"      epbf-m
 epbf-postgres         postgres:15-alpine         "docker-entrypoint.s…"   postgres       2 minutes ago   Up 2 minutes (healthy)
 ```
 
+### 3. Инициализация БД
+
+```bash
+docker exec -i epbf-postgres psql -U epbf -d epbf < /Users/asa/Documents/epbf-monitoring/internal/storage/postgres/migrations/001_init_schema.up.sql 2>&1 | head -20
+```
+
 ---
 
 ## Тестирование API

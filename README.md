@@ -74,16 +74,83 @@ cd epbf-monitoring
 2. **Запустите зависимости (PostgreSQL + Garage S3)**
 
 ```bash
-make docker-up
+cd deployments/
+export DOCKER_HOST="unix:///Users/asa/.colima/default/docker.sock"  # Для macOS/Colima
+docker-compose up -d
 ```
 
-3. **Запустите сервер**
+3. **Инициализируйте базу данных**
+
+```bash
+docker exec -i epbf-postgres psql -U epbf -d epbf < ../internal/storage/postgres/migrations/001_init_schema.up.sql
+```
+
+Ожидаемый вывод:
+```
+CREATE EXTENSION
+CREATE TABLE
+CREATE INDEX
+...
+INSERT 0 1
+```
+
+4. **Настройте Garage S3 - создайте бакет и ключ**
+
+```bash
+# Создайте бакет
+docker exec epbf-garage /garage bucket create epbf-plugins
+
+# Создайте ключ доступа с правами администратора
+docker exec epbf-garage /garage key create --admin epbf-admin
+```
+
+Ожидаемый вывод:
+```
+==== ACCESS KEY INFORMATION ====
+Key ID:              GKxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+Key name:            epbf-admin
+Secret key:          xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+Created:             ...
+Validity:            valid
+Can create buckets:  true
+```
+
+**Запишите Key ID и Secret key - они понадобятся для настройки!**
+
+5. **Выдайте ключу права на бакет**
+
+```bash
+# Замените GKxxx на ваш Key ID из предыдущего шага
+docker exec epbf-garage /garage bucket allow \
+  --read --write --owner \
+  epbf-plugins \
+  --key GKxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+6. **Обновите переменные окружения в docker-compose.yml**
+
+Откройте `deployments/docker-compose.yml` и найдите секцию `epbf-monitor`:
+
+```yaml
+epbf-monitor:
+  environment:
+    S3_ACCESS_KEY: GKxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx  # Ваш Key ID
+    S3_SECRET_KEY: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx  # Ваш Secret key
+```
+
+7. **Перезапустите сервер с новыми credentials**
+
+```bash
+docker-compose restart epbf-monitor
+```
+
+8. **Запустите сервер** (если не используете docker-compose)
 
 ```bash
 make run
 ```
 
-4. **Проверьте работу**
+9. **Проверьте работу**
 
 ```bash
 curl http://localhost:8080/health
@@ -102,6 +169,22 @@ curl -X POST http://localhost:8080/api/v1/plugins \
     "git_url": "https://github.com/epbf-monitoring/plugin-network.git"
   }'
 ```
+
+Или используйте тестовый плагин из репозитория:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/plugins \
+  -H "Content-Type: application/json" \
+  -d '{"git_url": "file:///workspace/plugins/example-container-monitor"}'
+```
+
+Проверьте статус сборки:
+
+```bash
+curl http://localhost:8080/api/v1/plugins/<plugin-id> | python3 -m json.tool
+```
+
+Ожидаемый статус после успешной сборки: `"status": "ready"`
 
 ## 📦 Создание плагинов
 
