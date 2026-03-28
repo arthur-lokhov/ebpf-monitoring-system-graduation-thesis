@@ -169,6 +169,54 @@ func (h *Handlers) DeletePlugin(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *Handlers) EnablePlugin(w http.ResponseWriter, r *http.Request) {
+	if h.PluginService == nil {
+		http.Error(w, "Plugin service not initialized", http.StatusServiceUnavailable)
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		http.Error(w, "Invalid plugin ID", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.PluginService.EnablePlugin(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "enabled",
+	})
+}
+
+func (h *Handlers) DisablePlugin(w http.ResponseWriter, r *http.Request) {
+	if h.PluginService == nil {
+		http.Error(w, "Plugin service not initialized", http.StatusServiceUnavailable)
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		http.Error(w, "Invalid plugin ID", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.PluginService.DisablePlugin(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "disabled",
+	})
+}
+
 func (h *Handlers) RebuildPlugin(w http.ResponseWriter, r *http.Request) {
 	if h.PluginService == nil {
 		http.Error(w, "Plugin service not initialized", http.StatusServiceUnavailable)

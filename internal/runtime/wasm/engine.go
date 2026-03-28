@@ -17,7 +17,6 @@ type Instance struct {
 	Store     *wasmtime.Store
 	Module    *wasmtime.Module
 	Instance  *wasmtime.Instance
-	Memory    *wasmtime.Memory
 	Functions *Functions
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -43,8 +42,7 @@ func NewEngine() *Engine {
 	logger.Info("Creating WASM engine...")
 	
 	config := wasmtime.NewConfig()
-	config.SetConcurrentCompilation(true)
-	config.SetMaxWasmStack(8 * 1024 * 1024) // 8MB stack
+	config.SetEpochInterruption(true)
 	
 	engine := wasmtime.NewEngineWithConfig(config)
 	
@@ -95,13 +93,7 @@ func (e *Engine) LoadPlugin(ctx context.Context, pluginID uuid.UUID, name string
 			"error", err.Error())
 		return nil, fmt.Errorf("failed to instantiate: %w", err)
 	}
-	
-	// Get memory
-	memory := instance.GetMemory(store, "memory")
-	if memory == nil {
-		logger.Warn("WASM module has no exported memory", "plugin_id", pluginID.String())
-	}
-	
+
 	// Get exported functions
 	functions := &Functions{
 		Init:      instance.GetFunc(store, "epbf_init"),
@@ -111,27 +103,26 @@ func (e *Engine) LoadPlugin(ctx context.Context, pluginID uuid.UUID, name string
 	
 	// Create instance
 	ctx, cancel := context.WithCancel(ctx)
-	
+
 	inst := &Instance{
 		ID:        pluginID,
 		Name:      name,
 		Store:     store,
 		Module:    module,
 		Instance:  instance,
-		Memory:    memory,
 		Functions: functions,
 		ctx:       ctx,
 		cancel:    cancel,
 	}
-	
+
 	e.instances[pluginID] = inst
-	
+
 	logger.Info("✅ WASM plugin loaded",
 		"plugin_id", pluginID.String(),
 		"has_init", functions.Init != nil,
 		"has_cleanup", functions.Cleanup != nil,
 		"has_process_events", functions.ProcessEvents != nil)
-	
+
 	return inst, nil
 }
 

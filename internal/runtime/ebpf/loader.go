@@ -1,6 +1,7 @@
 package ebpf
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -66,8 +67,8 @@ func (l *Loader) LoadProgram(ctx context.Context, pluginID uuid.UUID, name strin
 	
 	logger.Info("Loading eBPF program", "plugin_id", pluginID.String(), "name", name, "size", len(programBytes))
 	
-	// Load collection
-	spec, err := ebpf.LoadCollectionSpecFromReader(&binary.LittleEndian, programBytes)
+	// Load collection spec from bytes
+	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(programBytes))
 	if err != nil {
 		logger.Error("Failed to load eBPF collection spec",
 			"plugin_id", pluginID.String(),

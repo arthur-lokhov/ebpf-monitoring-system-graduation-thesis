@@ -96,6 +96,8 @@ func apiV1Router(h *Handlers) http.Handler {
 		r.Get("/{id}", h.GetPlugin)
 		r.Delete("/{id}", h.DeletePlugin)
 		r.Post("/{id}/rebuild", h.RebuildPlugin)
+		r.Post("/{id}/enable", h.EnablePlugin)
+		r.Post("/{id}/disable", h.DisablePlugin)
 	})
 
 	// Metrics

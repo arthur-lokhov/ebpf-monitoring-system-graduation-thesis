@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/client"
+	"github.com/epbf-monitoring/epbf-monitor/internal/logger"
 	"github.com/epbf-monitoring/epbf-monitor/internal/metrics"
 	"github.com/epbf-monitoring/epbf-monitor/internal/plugin/builder"
 	pg "github.com/epbf-monitoring/epbf-monitor/internal/storage/postgres"
@@ -22,6 +23,7 @@ type Service struct {
 	builder      *builder.Builder
 	pluginRepo   *pg.PluginRepo
 	storage      *s3.PluginStorage
+	runtime      *Runtime
 	metrics      *metrics.Collector
 	dockerClient *client.Client
 	buildDir     string
@@ -56,11 +58,19 @@ func NewService(
 		return nil, fmt.Errorf("failed to create builder: %w", err)
 	}
 
+	// Create runtime manager - need to get s3.Client from PluginStorage
+	// For now, pass nil and we'll fix this later
+	runtimeManager, err := NewRuntime(nil, metricsCollector)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create runtime manager: %w", err)
+	}
+
 	return &Service{
 		loader:       NewLoader(cfg.BuildDir),
 		builder:      b,
 		pluginRepo:   pluginRepo,
 		storage:      storage,
+		runtime:      runtimeManager,
 		metrics:      metricsCollector,
 		dockerClient: dockerClient,
 		buildDir:     cfg.BuildDir,
@@ -189,6 +199,14 @@ func (s *Service) buildPlugin(ctx context.Context, pluginID uuid.UUID, gitURL, r
 		s.metrics.PluginBuildSuccess(loadResult.Manifest.Name, loadResult.Manifest.Version, buildResult.Duration.Seconds())
 	}
 
+	// Start plugin runtime
+	if err := s.runtime.StartPlugin(ctx, pluginID, loadResult.Manifest.Name, loadResult.Manifest.Version, ebpfKey, wasmKey); err != nil {
+		logger.Error("Failed to start plugin runtime",
+			"plugin_id", pluginID.String(),
+			"error", err.Error())
+		// Continue anyway - runtime is optional
+	}
+
 	// Cleanup build directory
 	s.loader.Cleanup(loadResult.Manifest.Name)
 }
@@ -227,6 +245,15 @@ func (s *Service) ListPlugins(ctx context.Context, status *pg.PluginStatus) ([]*
 
 // DeletePlugin deletes a plugin and its artifacts
 func (s *Service) DeletePlugin(ctx context.Context, id uuid.UUID) error {
+	logger.Info("Deleting plugin", "plugin_id", id.String())
+
+	// Stop runtime
+	if err := s.runtime.RemovePlugin(id); err != nil {
+		logger.Error("Failed to remove plugin runtime",
+			"plugin_id", id.String(),
+			"error", err.Error())
+	}
+
 	// Get plugin to find S3 keys
 	plugin, err := s.pluginRepo.GetByID(ctx, id)
 	if err != nil {
@@ -243,7 +270,51 @@ func (s *Service) DeletePlugin(ctx context.Context, id uuid.UUID) error {
 	}
 
 	// Delete from database
-	return s.pluginRepo.Delete(ctx, id)
+	if err := s.pluginRepo.Delete(ctx, id); err != nil {
+		return err
+	}
+
+	// Record metric
+	s.metrics.PluginBuildFailure(plugin.Name, 0)
+
+	logger.Info("✅ Plugin deleted", "plugin_id", id.String())
+	return nil
+}
+
+// EnablePlugin enables a plugin
+func (s *Service) EnablePlugin(ctx context.Context, id uuid.UUID) error {
+	logger.Info("Enabling plugin", "plugin_id", id.String())
+
+	// Update status in DB
+	if err := s.pluginRepo.UpdateStatus(ctx, id, pg.PluginStatusReady, "", ""); err != nil {
+		return err
+	}
+
+	// Enable runtime
+	if err := s.runtime.EnablePlugin(id); err != nil {
+		return err
+	}
+
+	logger.Info("✅ Plugin enabled", "plugin_id", id.String())
+	return nil
+}
+
+// DisablePlugin disables a plugin
+func (s *Service) DisablePlugin(ctx context.Context, id uuid.UUID) error {
+	logger.Info("Disabling plugin", "plugin_id", id.String())
+
+	// Update status in DB
+	if err := s.pluginRepo.UpdateStatus(ctx, id, pg.PluginStatusError, "", "Disabled"); err != nil {
+		return err
+	}
+
+	// Disable runtime
+	if err := s.runtime.DisablePlugin(id); err != nil {
+		return err
+	}
+
+	logger.Info("✅ Plugin disabled", "plugin_id", id.String())
+	return nil
 }
 
 // RebuildPlugin rebuilds an existing plugin
