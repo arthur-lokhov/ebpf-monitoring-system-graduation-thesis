@@ -1,0 +1,44 @@
+# WASM Makefile template
+# This template is copied to plugin directories during build
+
+CLANG ?= clang
+WASI_SDK ?= /opt/wasi-sdk
+
+# WASM source file
+WASM_SRC ?= main.c
+WASM_OBJ ?= build/plugin.wasm
+
+# Compiler flags
+CFLAGS := -O2 -g -Wall -Wextra
+CFLAGS += --target=wasm32
+CFLAGS += -nostdlib
+CFLAGS += -Wl,--no-entry
+CFLAGS += -Wl,--export=epbf_init
+CFLAGS += -Wl,--export=__data_end
+CFLAGS += -Wl,--export=__heap_base
+CFLAGS += -Wl,--strip-debug
+CFLAGS += -Wl,--allow-undefined
+
+# Include SDK headers
+SDK_DIR ?= /workspace/pkg/wasmsdk
+CFLAGS += -I$(SDK_DIR)/include
+
+.PHONY: all build clean
+
+all: build
+
+build: $(WASM_OBJ)
+
+$(WASM_OBJ): $(WASM_SRC)
+	@mkdir -p build
+	$(CLANG) $(CFLAGS) $< -o $@
+	@echo "✅ Built WASM module: $@"
+	@ls -lh $@
+
+clean:
+	rm -rf build/
+
+# Check WASM module
+inspect: $(WASM_OBJ)
+	@echo "🔍 Inspecting WASM module..."
+	@wasm-objdump -x $< 2>&1 | head -30 || true

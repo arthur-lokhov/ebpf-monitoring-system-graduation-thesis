@@ -1,0 +1,46 @@
+# eBPF Makefile template
+# This template is copied to plugin directories during build
+
+CLANG ?= clang
+LLVM_STRIP ?= llvm-strip
+
+# eBPF source file
+EBPF_SRC ?= main.c
+EBPF_OBJ ?= build/program.o
+
+# Target architecture
+TARGET ?= bpfel
+
+# Compiler flags
+CFLAGS := -O2 -g -Wall -Wextra
+CFLAGS += -D__TARGET_ARCH_$(ARCH)
+CFLAGS += -I/usr/include
+CFLAGS += -I.
+
+# Target-specific flags
+ifeq ($(TARGET), bpfel)
+    CFLAGS += -target bpfel
+else ifeq ($(TARGET), bpfeb)
+    CFLAGS += -target bpfeb
+else
+    CFLAGS += -target bpf
+endif
+
+.PHONY: all build clean
+
+all: build
+
+build: $(EBPF_OBJ)
+
+$(EBPF_OBJ): $(EBPF_SRC)
+	@mkdir -p build
+	$(CLANG) $(CFLAGS) -c $< -o $@
+	@echo "✅ Built eBPF object: $@"
+
+clean:
+	rm -rf build/
+
+# Verify eBPF program
+verify: $(EBPF_OBJ)
+	@echo "🔍 Verifying eBPF program..."
+	@bpftool prog dump xlated $< 2>&1 | head -20 || true
