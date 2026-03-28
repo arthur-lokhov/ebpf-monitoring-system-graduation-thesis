@@ -134,14 +134,29 @@ func (d *DynamicMetrics) RegisterPluginMetrics(pluginName, version string, manif
 		
 		help, _ := metricMap["help"].(string)
 		
-		// Get labels
+		// Get labels - handle both []any and []string
 		var labels []string
 		if labelsRaw, ok := metricMap["labels"].([]any); ok {
+			logger.Debug("Processing labels as []any",
+				"plugin", pluginName,
+				"name", name,
+				"labels_raw", labelsRaw)
 			for _, l := range labelsRaw {
 				if labelStr, ok := l.(string); ok {
 					labels = append(labels, labelStr)
 				}
 			}
+		} else if labelsRaw, ok := metricMap["labels"].([]string); ok {
+			logger.Debug("Processing labels as []string",
+				"plugin", pluginName,
+				"name", name,
+				"labels", labelsRaw)
+			labels = labelsRaw
+		} else {
+			logger.Debug("Labels not found or wrong type",
+				"plugin", pluginName,
+				"name", name,
+				"labels_type", fmt.Sprintf("%T", metricMap["labels"]))
 		}
 		
 		// Create full metric name with plugin prefix
