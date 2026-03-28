@@ -30,6 +30,16 @@ type BuildResult struct {
 	Duration  time.Duration
 }
 
+// BuildError represents a build error with logs
+type BuildError struct {
+	error
+	BuildLog string
+}
+
+func (e *BuildError) Error() string {
+	return fmt.Sprintf("build failed: %v", e.error)
+}
+
 // Builder handles plugin building in Docker containers
 type Builder struct {
 	dockerClient *client.Client
@@ -62,7 +72,7 @@ func (b *Builder) Build(ctx context.Context, pluginDir, pluginName string) (*Bui
 	// Prepare mount paths
 	hostSourceDir := pluginDir
 	containerSourceDir := "/workspace/plugin"
-	containerOutputDir := "/workspace/output"
+	containerOutputDir := "" // Not mounting output, will use docker cp
 
 	// Create output directory
 	outputDir := filepath.Join(pluginDir, "build")
@@ -76,19 +86,22 @@ set -e
 echo "🔨 Building plugin..."
 cd /workspace/plugin
 
+# Create temp output directory
+mkdir -p /tmp/epbf-build-output
+
 # Build eBPF
 echo "📦 Building eBPF program..."
 if [ -f ebpf/Makefile ]; then
     make -C ebpf
-    cp ebpf/build/program.o /workspace/output/program.o 2>/dev/null || true
+    cp ebpf/build/program.o /tmp/epbf-build-output/program.o
 elif [ -f ebpf/main.c ]; then
     clang -O2 -g -Wall -Wextra \
         -target bpf \
         -D__TARGET_ARCH_x86_64 \
         -I/usr/include \
         -c ebpf/main.c \
-        -o /workspace/output/program.o
-    echo "✅ eBPF: /workspace/output/program.o"
+        -o /tmp/epbf-build-output/program.o
+    echo "✅ eBPF: /tmp/epbf-build-output/program.o"
 else
     echo "❌ No eBPF source found"
     exit 1
@@ -98,7 +111,7 @@ fi
 echo "📦 Building WASM module..."
 if [ -f wasm/Makefile ]; then
     make -C wasm
-    cp wasm/build/plugin.wasm /workspace/output/plugin.wasm 2>/dev/null || true
+    cp wasm/build/plugin.wasm /tmp/epbf-build-output/plugin.wasm
 elif [ -f wasm/main.c ]; then
     clang -O2 -g -Wall -Wextra \
         --target=wasm32 \
@@ -111,15 +124,20 @@ elif [ -f wasm/main.c ]; then
         -Wl,--allow-undefined \
         -I/workspace/plugin/../../pkg/wasmsdk/include \
         wasm/main.c \
-        -o /workspace/output/plugin.wasm
-    echo "✅ WASM: /workspace/output/plugin.wasm"
+        -o /tmp/epbf-build-output/plugin.wasm
+    echo "✅ WASM: /tmp/epbf-build-output/plugin.wasm"
 else
     echo "❌ No WASM source found"
     exit 1
 fi
 
+# Copy to output directory
+echo "📊 Copying build artifacts..."
+cp /tmp/epbf-build-output/program.o /workspace/plugin/build/program.o
+cp /tmp/epbf-build-output/plugin.wasm /workspace/plugin/build/plugin.wasm
+
 echo "📊 Build artifacts:"
-ls -lh /workspace/output/
+ls -lh /workspace/plugin/build/
 echo "✅ Build complete!"
 `
 
@@ -130,7 +148,8 @@ echo "✅ Build complete!"
 		WorkingDir:   containerSourceDir,
 		AttachStdout: true,
 		AttachStderr: true,
-		User:         "builder",
+		// Run as root to avoid permission issues with bind mounts on macOS
+		// User:         "builder",
 		Env: []string{
 			"PLUGIN_NAME=" + pluginName,
 			"OUTPUT_DIR=" + containerOutputDir,
@@ -145,11 +164,6 @@ echo "✅ Build complete!"
 				Source:   hostSourceDir,
 				Target:   containerSourceDir,
 				ReadOnly: true,
-			},
-			{
-				Type:   mount.TypeBind,
-				Source: outputDir,
-				Target: containerOutputDir,
 			},
 		},
 		Resources: container.Resources{
@@ -206,7 +220,10 @@ echo "✅ Build complete!"
 
 		if status.StatusCode != 0 {
 			result.Success = false
-			return result, fmt.Errorf("build failed with exit code %d", status.StatusCode)
+			return result, &BuildError{
+				error:    fmt.Errorf("build failed with exit code %d", status.StatusCode),
+				BuildLog: logBuffer.String(),
+			}
 		}
 	}
 
@@ -380,4 +397,20 @@ func createTarContext(dir string) (io.ReadCloser, error) {
 		pw.Close()
 	}()
 	return pr, nil
+}
+
+// extractTarContent extracts file content from tar archive
+func extractTarContent(tarData []byte) []byte {
+	// Docker cp returns tar archive, extract first file
+	tr := tar.NewReader(bytes.NewReader(tarData))
+	header, err := tr.Next()
+	if err != nil {
+		return tarData // Return original if not tar
+	}
+	
+	content := make([]byte, header.Size)
+	if _, err := io.ReadFull(tr, content); err != nil {
+		return tarData
+	}
+	return content
 }

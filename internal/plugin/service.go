@@ -113,44 +113,49 @@ func (s *Service) buildPlugin(ctx context.Context, pluginID uuid.UUID, gitURL, r
 		PluginDir: s.buildDir,
 	})
 	if err != nil {
-		s.handleBuildError(ctx, pluginID, err)
+		s.handleBuildError(ctx, pluginID, err, "")
 		return
 	}
 
 	// Build plugin
 	buildResult, err := s.builder.Build(ctx, loadResult.PluginDir, loadResult.Manifest.Name)
 	if err != nil {
-		s.handleBuildError(ctx, pluginID, err)
+		// Extract build log from BuildError if available
+		buildLog := ""
+		if buildErr, ok := err.(*builder.BuildError); ok {
+			buildLog = buildErr.BuildLog
+		}
+		s.handleBuildError(ctx, pluginID, err, buildLog)
 		return
 	}
 
 	if !buildResult.Success {
-		s.handleBuildError(ctx, pluginID, fmt.Errorf("build failed: %s", buildResult.BuildLog))
+		s.handleBuildError(ctx, pluginID, fmt.Errorf("build failed: %s", buildResult.BuildLog), buildResult.BuildLog)
 		return
 	}
 
 	// Upload artifacts to S3
 	ebpfData, err := readFile(buildResult.EBPFFile)
 	if err != nil {
-		s.handleBuildError(ctx, pluginID, fmt.Errorf("failed to read eBPF file: %w", err))
+		s.handleBuildError(ctx, pluginID, fmt.Errorf("failed to read eBPF file: %w", err), "")
 		return
 	}
 
 	wasmData, err := readFile(buildResult.WASMFile)
 	if err != nil {
-		s.handleBuildError(ctx, pluginID, fmt.Errorf("failed to read WASM file: %w", err))
+		s.handleBuildError(ctx, pluginID, fmt.Errorf("failed to read WASM file: %w", err), "")
 		return
 	}
 
 	ebpfKey, err := s.storage.UploadEBPF(ctx, pluginID, ebpfData, int64(ebpfData.Len()))
 	if err != nil {
-		s.handleBuildError(ctx, pluginID, fmt.Errorf("failed to upload eBPF: %w", err))
+		s.handleBuildError(ctx, pluginID, fmt.Errorf("failed to upload eBPF: %w", err), "")
 		return
 	}
 
 	wasmKey, err := s.storage.UploadWASM(ctx, pluginID, wasmData, int64(wasmData.Len()))
 	if err != nil {
-		s.handleBuildError(ctx, pluginID, fmt.Errorf("failed to upload WASM: %w", err))
+		s.handleBuildError(ctx, pluginID, fmt.Errorf("failed to upload WASM: %w", err), "")
 		return
 	}
 
@@ -180,9 +185,18 @@ func (s *Service) buildPlugin(ctx context.Context, pluginID uuid.UUID, gitURL, r
 }
 
 // handleBuildError updates plugin status on build error
-func (s *Service) handleBuildError(ctx context.Context, pluginID uuid.UUID, err error) {
+func (s *Service) handleBuildError(ctx context.Context, pluginID uuid.UUID, err error, buildLog string) {
 	logError("build error", err)
-	if err := s.pluginRepo.UpdateStatus(ctx, pluginID, pg.PluginStatusError, "", err.Error()); err != nil {
+	errorMsg := err.Error()
+	
+	// Use provided build log or extract from BuildError
+	if buildLog == "" {
+		if buildErr, ok := err.(*builder.BuildError); ok {
+			buildLog = buildErr.BuildLog
+		}
+	}
+	
+	if err := s.pluginRepo.UpdateStatus(ctx, pluginID, pg.PluginStatusError, buildLog, errorMsg); err != nil {
 		logError("failed to update error status", err)
 	}
 }
