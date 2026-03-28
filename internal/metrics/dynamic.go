@@ -42,9 +42,32 @@ func (d *DynamicMetrics) RegisterPluginMetrics(pluginName, version string, manif
 		"version", version)
 	
 	// Get metrics from manifest
-	metricsList, ok := manifest["metrics"].([]any)
+	metricsRaw, ok := manifest["metrics"]
 	if !ok {
 		logger.Warn("No metrics found in manifest", "plugin", pluginName)
+		return nil
+	}
+	
+	// Convert to slice of maps
+	var metricsList []map[string]any
+	switch v := metricsRaw.(type) {
+	case []any:
+		for _, m := range v {
+			if mMap, ok := m.(map[string]any); ok {
+				metricsList = append(metricsList, mMap)
+			}
+		}
+	case []map[string]any:
+		metricsList = v
+	default:
+		logger.Warn("Invalid metrics format in manifest", 
+			"plugin", pluginName, 
+			"type", fmt.Sprintf("%T", metricsRaw))
+		return nil
+	}
+	
+	if len(metricsList) == 0 {
+		logger.Warn("No valid metrics found in manifest", "plugin", pluginName)
 		return nil
 	}
 	
@@ -54,13 +77,7 @@ func (d *DynamicMetrics) RegisterPluginMetrics(pluginName, version string, manif
 		Collectors: make(map[string]prometheus.Collector),
 	}
 	
-	for i, m := range metricsList {
-		metricMap, ok := m.(map[string]any)
-		if !ok {
-			logger.Warn("Invalid metric definition", "plugin", pluginName, "index", i)
-			continue
-		}
-		
+	for i, metricMap := range metricsList {
 		name, ok := metricMap["name"].(string)
 		if !ok {
 			logger.Warn("Metric missing name", "plugin", pluginName, "index", i)

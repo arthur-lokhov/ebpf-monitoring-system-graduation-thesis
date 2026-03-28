@@ -45,6 +45,8 @@ services:
       - "8080:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    ulimits:
+      memlock: -1
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
