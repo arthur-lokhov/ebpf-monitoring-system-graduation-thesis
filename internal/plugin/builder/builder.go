@@ -65,15 +65,68 @@ func (b *Builder) Build(ctx context.Context, pluginDir, pluginName string) (*Bui
 	containerOutputDir := "/workspace/output"
 
 	// Create output directory
-	outputDir := filepath.Join(filepath.Dir(pluginDir), "output", pluginName)
+	outputDir := filepath.Join(pluginDir, "build")
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
 
+	// Create build script
+	buildScript := `
+set -e
+echo "🔨 Building plugin..."
+cd /workspace/plugin
+
+# Build eBPF
+echo "📦 Building eBPF program..."
+if [ -f ebpf/Makefile ]; then
+    make -C ebpf
+    cp ebpf/build/program.o /workspace/output/program.o 2>/dev/null || true
+elif [ -f ebpf/main.c ]; then
+    clang -O2 -g -Wall -Wextra \
+        -target bpf \
+        -D__TARGET_ARCH_x86_64 \
+        -I/usr/include \
+        -c ebpf/main.c \
+        -o /workspace/output/program.o
+    echo "✅ eBPF: /workspace/output/program.o"
+else
+    echo "❌ No eBPF source found"
+    exit 1
+fi
+
+# Build WASM
+echo "📦 Building WASM module..."
+if [ -f wasm/Makefile ]; then
+    make -C wasm
+    cp wasm/build/plugin.wasm /workspace/output/plugin.wasm 2>/dev/null || true
+elif [ -f wasm/main.c ]; then
+    clang -O2 -g -Wall -Wextra \
+        --target=wasm32 \
+        -nostdlib \
+        -Wl,--no-entry \
+        -Wl,--export=epbf_init \
+        -Wl,--export=__data_end \
+        -Wl,--export=__heap_base \
+        -Wl,--strip-debug \
+        -Wl,--allow-undefined \
+        -I/workspace/plugin/../../pkg/wasmsdk/include \
+        wasm/main.c \
+        -o /workspace/output/plugin.wasm
+    echo "✅ WASM: /workspace/output/plugin.wasm"
+else
+    echo "❌ No WASM source found"
+    exit 1
+fi
+
+echo "📊 Build artifacts:"
+ls -lh /workspace/output/
+echo "✅ Build complete!"
+`
+
 	// Container configuration
 	config := &container.Config{
 		Image:        b.imageName,
-		Cmd:          []string{"sh", "-c", "echo 'Building plugin...' && ls -la && echo 'Done'"},
+		Cmd:          []string{"sh", "-c", buildScript},
 		WorkingDir:   containerSourceDir,
 		AttachStdout: true,
 		AttachStderr: true,
@@ -88,9 +141,9 @@ func (b *Builder) Build(ctx context.Context, pluginDir, pluginName string) (*Bui
 		AutoRemove: true,
 		Mounts: []mount.Mount{
 			{
-				Type:   mount.TypeBind,
-				Source: hostSourceDir,
-				Target: containerSourceDir,
+				Type:     mount.TypeBind,
+				Source:   hostSourceDir,
+				Target:   containerSourceDir,
 				ReadOnly: true,
 			},
 			{

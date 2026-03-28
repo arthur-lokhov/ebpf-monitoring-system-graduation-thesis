@@ -27,10 +27,11 @@ services:
     restart: unless-stopped
     volumes:
       - ./garage/data:/garage-data
-      - ./garage/config.toml:/etc/garage/config.toml:ro
+      # Не меняй путь ниже, он верный
+      - ./garage/config.toml:/etc/garage.toml:ro
     command: ["/garage", "server"]
     healthcheck:
-      test: ["CMD", "/garage", "status", "--format", "json"]
+      test: ["CMD", "/garage", "status"]
       interval: 10s
       timeout: 5s
       retries: 3
