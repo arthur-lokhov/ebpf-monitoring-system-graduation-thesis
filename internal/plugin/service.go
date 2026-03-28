@@ -349,11 +349,72 @@ func readFile(path string) (*bytes.Reader, error) {
 }
 
 func manifestToMap(m *Manifest) map[string]any {
-	// TODO: Implement manifest conversion
-	return map[string]any{
-		"name":    m.Name,
-		"version": m.Version,
+	// Convert full manifest to map
+	result := map[string]any{
+		"name":        m.Name,
+		"version":     m.Version,
+		"description": m.Description,
+		"author":      m.Author,
 	}
+	
+	// Convert ebpf config
+	if m.EBPF.Entry != "" {
+		ebpfMap := map[string]any{
+			"entry": m.EBPF.Entry,
+		}
+		if len(m.EBPF.Programs) > 0 {
+			programs := make([]map[string]any, len(m.EBPF.Programs))
+			for i, p := range m.EBPF.Programs {
+				programs[i] = map[string]any{
+					"name":   p.Name,
+					"type":   p.Type,
+					"attach": p.Attach,
+				}
+			}
+			ebpfMap["programs"] = programs
+		}
+		result["ebpf"] = ebpfMap
+	}
+	
+	// Convert wasm config
+	if m.WASM.Entry != "" {
+		result["wasm"] = map[string]any{
+			"entry":       m.WASM.Entry,
+			"sdk_version": m.WASM.SDKVersion,
+		}
+	}
+	
+	// Convert metrics
+	if len(m.Metrics) > 0 {
+		metrics := make([]map[string]any, len(m.Metrics))
+		for i, metric := range m.Metrics {
+			metricMap := map[string]any{
+				"name": metric.Name,
+				"type": metric.Type,
+				"help": metric.Help,
+			}
+			if len(metric.Labels) > 0 {
+				metricMap["labels"] = metric.Labels
+			}
+			metrics[i] = metricMap
+		}
+		result["metrics"] = metrics
+	}
+	
+	// Convert filters
+	if len(m.Filters) > 0 {
+		filters := make([]map[string]any, len(m.Filters))
+		for i, filter := range m.Filters {
+			filters[i] = map[string]any{
+				"name":        filter.Name,
+				"expression":  filter.Expression,
+				"description": filter.Description,
+			}
+		}
+		result["filters"] = filters
+	}
+	
+	return result
 }
 
 func logError(msg string, err error) {
