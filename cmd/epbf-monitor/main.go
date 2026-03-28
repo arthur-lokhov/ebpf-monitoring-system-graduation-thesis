@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,102 +10,145 @@ import (
 	"time"
 
 	"github.com/epbf-monitoring/epbf-monitor/internal/api"
+	"github.com/epbf-monitoring/epbf-monitor/internal/logger"
 	"github.com/epbf-monitoring/epbf-monitor/internal/plugin"
-	pg "github.com/epbf-monitoring/epbf-monitor/internal/storage/postgres"
+	"github.com/epbf-monitoring/epbf-monitor/internal/storage/postgres"
 	"github.com/epbf-monitoring/epbf-monitor/internal/storage/s3"
 )
 
 func main() {
-	log.Println("🚀 Starting epbf-monitoring...")
+	// Initialize logger
+	logLevel := os.Getenv("LOG_LEVEL")
+	if logLevel == "" {
+		logLevel = "info"
+	}
+	if err := logger.Init(logLevel); err != nil {
+		fmt.Printf("Failed to initialize logger: %v\n", err)
+		os.Exit(1)
+	}
+	defer logger.Sync()
+
+	logger.Info("🚀 Starting epbf-monitoring...", "version", "0.1.0")
 
 	// Create context that cancels on SIGINT/SIGTERM
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	// Initialize database
-	log.Println("📦 Connecting to PostgreSQL...")
-	dbConfig := pg.DefaultConfig()
+	logger.Info("📦 Connecting to PostgreSQL...")
+	dbConfig := postgres.DefaultConfig()
 
 	// Override with env vars if present
-	if host := os.Getenv("DB_HOST"); host != "" {
+	if host := getEnv("DB_HOST", ""); host != "" {
 		dbConfig.Host = host
+		logger.Debug("DB_HOST overridden", "host", host)
 	}
-	if port := os.Getenv("DB_PORT"); port != "" {
+	if port := getEnv("DB_PORT", ""); port != "" {
 		fmt.Sscanf(port, "%d", &dbConfig.Port)
+		logger.Debug("DB_PORT overridden", "port", port)
 	}
-	if user := os.Getenv("DB_USER"); user != "" {
+	if user := getEnv("DB_USER", ""); user != "" {
 		dbConfig.User = user
+		logger.Debug("DB_USER overridden", "user", user)
 	}
-	if password := os.Getenv("DB_PASSWORD"); password != "" {
+	if password := getEnv("DB_PASSWORD", ""); password != "" {
 		dbConfig.Password = password
+		logger.Debug("DB_PASSWORD overridden")
 	}
-	if database := os.Getenv("DB_NAME"); database != "" {
+	if database := getEnv("DB_NAME", ""); database != "" {
 		dbConfig.Database = database
+		logger.Debug("DB_NAME overridden", "database", database)
 	}
 
-	db, err := pg.NewClient(dbConfig)
+	logger.Debug("PostgreSQL config", 
+		"host", dbConfig.Host, 
+		"port", dbConfig.Port, 
+		"user", dbConfig.User,
+		"database", dbConfig.Database)
+
+	db, err := postgres.NewClient(dbConfig)
 	if err != nil {
-		log.Printf("⚠️  Database connection failed: %v (running without database)", err)
+		logger.Warn("⚠️  Database connection failed", "error", err.Error())
+		logger.Info("Running without database - some features will be disabled")
 		db = nil
 	} else {
-		log.Println("✅ Connected to PostgreSQL")
+		logger.Info("✅ Connected to PostgreSQL", "host", dbConfig.Host, "database", dbConfig.Database)
 		defer db.Close()
 	}
 
 	// Initialize S3 storage
-	log.Println("📦 Connecting to S3...")
+	logger.Info("📦 Connecting to S3...")
 	s3Config := s3.DefaultConfig()
 
-	if endpoint := os.Getenv("S3_ENDPOINT"); endpoint != "" {
+	if endpoint := getEnv("S3_ENDPOINT", ""); endpoint != "" {
 		s3Config.Endpoint = endpoint
+		logger.Debug("S3_ENDPOINT overridden", "endpoint", endpoint)
 	}
-	if accessKey := os.Getenv("S3_ACCESS_KEY"); accessKey != "" {
+	if accessKey := getEnv("S3_ACCESS_KEY", ""); accessKey != "" {
 		s3Config.AccessKey = accessKey
+		logger.Debug("S3_ACCESS_KEY overridden")
 	}
-	if secretKey := os.Getenv("S3_SECRET_KEY"); secretKey != "" {
+	if secretKey := getEnv("S3_SECRET_KEY", ""); secretKey != "" {
 		s3Config.SecretKey = secretKey
+		logger.Debug("S3_SECRET_KEY overridden")
 	}
-	if bucket := os.Getenv("S3_BUCKET"); bucket != "" {
+	if bucket := getEnv("S3_BUCKET", ""); bucket != "" {
 		s3Config.BucketName = bucket
+		logger.Debug("S3_BUCKET overridden", "bucket", bucket)
 	}
+	if region := getEnv("S3_REGION", ""); region != "" {
+		s3Config.Region = region
+		logger.Debug("S3_REGION overridden", "region", region)
+	}
+
+	logger.Debug("S3 config",
+		"endpoint", s3Config.Endpoint,
+		"region", s3Config.Region,
+		"bucket", s3Config.BucketName,
+		"access_key_set", s3Config.AccessKey != "")
 
 	s3Client, err := s3.NewClient(s3Config)
 	if err != nil {
-		log.Printf("⚠️  S3 connection failed: %v (running without object storage)", err)
+		logger.Warn("⚠️  S3 connection failed", "error", err.Error())
+		logger.Info("Running without object storage - some features will be disabled")
 		s3Client = nil
 	} else {
-		log.Println("✅ Connected to S3")
+		// Test S3 connection
+		if err := s3Client.Health(ctx); err != nil {
+			logger.Warn("⚠️  S3 health check failed", "error", err.Error())
+			logger.Info("S3 may not be accessible - uploads will fail")
+		} else {
+			logger.Info("✅ Connected to S3", "endpoint", s3Config.Endpoint, "bucket", s3Config.BucketName)
+		}
 	}
 
 	// Initialize repositories
-	var pluginRepo *pg.PluginRepo
+	var pluginRepo *postgres.PluginRepo
 	var pluginStorage *s3.PluginStorage
 
 	if db != nil {
-		pluginRepo = pg.NewPluginRepo(db)
-		log.Println("✅ Plugin repository initialized")
+		pluginRepo = postgres.NewPluginRepo(db)
+		logger.Info("✅ Plugin repository initialized")
 	}
 
 	if s3Client != nil {
 		pluginStorage = s3.NewPluginStorage(s3Client)
-		log.Println("✅ Plugin storage initialized")
+		logger.Info("✅ Plugin storage initialized")
 	}
 
 	// Initialize plugin service
 	var pluginService *plugin.Service
 	if pluginRepo != nil && pluginStorage != nil {
-		buildDir := os.Getenv("BUILD_DIR")
-		if buildDir == "" {
-			buildDir = "/tmp/epbf-builds"
-		}
+		buildDir := getEnv("BUILD_DIR", "/tmp/epbf-builds")
+		builderImage := getEnv("BUILDER_IMAGE", "epbf-monitor-builder:latest")
+		enableDocker := getEnv("ENABLE_DOCKER", "true") != "false"
 
-		builderImage := os.Getenv("BUILDER_IMAGE")
-		if builderImage == "" {
-			builderImage = "epbf-monitor-builder:latest"
-		}
+		logger.Info("🔨 Initializing plugin service",
+			"build_dir", buildDir,
+			"builder_image", builderImage,
+			"enable_docker", enableDocker)
 
-		enableDocker := os.Getenv("ENABLE_DOCKER") != "false"
-
+		var err error
 		pluginService, err = plugin.NewService(
 			pluginRepo,
 			pluginStorage,
@@ -117,26 +159,28 @@ func main() {
 			},
 		)
 		if err != nil {
-			log.Printf("⚠️  Plugin service initialization failed: %v", err)
+			logger.Error("⚠️  Plugin service initialization failed", "error", err.Error())
 		} else {
-			log.Println("✅ Plugin service initialized")
+			logger.Info("✅ Plugin service initialized")
 		}
+	} else {
+		logger.Warn("⚠️  Plugin service not initialized - missing dependencies",
+			"has_db", pluginRepo != nil,
+			"has_s3", pluginStorage != nil)
 	}
 
 	// Initialize API handlers
 	handlers := api.NewHandlers()
 	handlers.SetPluginService(pluginService)
+	logger.Info("🔌 API handlers initialized")
 
 	// Setup router
 	router := api.NewRouter()
 	api.SetupRoutes(router, handlers)
+	logger.Info("🛣️  HTTP router configured")
 
 	// Start server
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-
+	port := getEnv("PORT", "8080")
 	server := &http.Server{
 		Addr:         ":" + port,
 		Handler:      router,
@@ -145,30 +189,41 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	go func() {
-		log.Printf("🌐 Server starting on :%s", port)
-		log.Printf("📊 Health: http://localhost:%s/health", port)
-		log.Printf("📈 Metrics: http://localhost:%s/metrics", port)
-		log.Printf("🔌 API: http://localhost:%s/api/v1", port)
+	logger.Info("🌐 Starting HTTP server", "port", port)
+	logger.Info("📊 Endpoints:",
+		"health", fmt.Sprintf("http://localhost:%s/health", port),
+		"metrics", fmt.Sprintf("http://localhost:%s/metrics", port),
+		"api", fmt.Sprintf("http://localhost:%s/api/v1", port))
 
+	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("❌ Server failed: %v", err)
+			logger.Fatal("❌ Server failed", "error", err.Error())
 		}
 	}()
+
+	logger.Info("✅ Server is ready to accept connections")
 
 	// Wait for interrupt signal
 	<-ctx.Done()
 
-	log.Println("\n🛑 Shutting down server...")
+	logger.Info("\n🛑 Shutting down server...")
 
 	// Graceful shutdown with timeout
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("❌ Server shutdown failed: %v", err)
+		logger.Error("❌ Server shutdown failed", "error", err.Error())
 	}
 
-	log.Println("✅ Server stopped")
+	logger.Info("✅ Server stopped")
 	fmt.Println("👋 Bye!")
+}
+
+// getEnv returns environment variable or default value
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
 }

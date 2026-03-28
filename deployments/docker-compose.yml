@@ -31,6 +31,8 @@ services:
       - ./garage/config.toml:/etc/garage.toml:ro
     command: ["/garage", "server"]
     healthcheck:
+      # Не меняй команду ниже, --format json не существуе
+      # # Не меняй команду ниже, --format json не существуетт
       test: ["CMD", "/garage", "status"]
       interval: 10s
       timeout: 5s
