@@ -137,6 +137,10 @@ func main() {
 		logger.Info("✅ Plugin storage initialized")
 	}
 
+	// Initialize metrics collector BEFORE plugin service
+	metricsCollector := metrics.NewCollector()
+	logger.Info("✅ Metrics collector initialized")
+
 	// Initialize plugin service
 	var pluginService *plugin.Service
 	if pluginRepo != nil && pluginStorage != nil {
@@ -153,6 +157,7 @@ func main() {
 		pluginService, err = plugin.NewService(
 			pluginRepo,
 			pluginStorage,
+			metricsCollector,
 			plugin.Config{
 				BuildDir:     buildDir,
 				BuilderImage: builderImage,
@@ -169,10 +174,6 @@ func main() {
 			"has_db", pluginRepo != nil,
 			"has_s3", pluginStorage != nil)
 	}
-
-	// Initialize metrics collector
-	metricsCollector := metrics.NewCollector()
-	logger.Info("✅ Metrics collector initialized")
 
 	// Initialize API handlers
 	handlers := api.NewHandlers()

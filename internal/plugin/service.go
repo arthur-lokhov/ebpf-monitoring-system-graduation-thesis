@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/client"
+	"github.com/epbf-monitoring/epbf-monitor/internal/metrics"
 	"github.com/epbf-monitoring/epbf-monitor/internal/plugin/builder"
 	pg "github.com/epbf-monitoring/epbf-monitor/internal/storage/postgres"
 	"github.com/epbf-monitoring/epbf-monitor/internal/storage/s3"
@@ -21,6 +22,7 @@ type Service struct {
 	builder      *builder.Builder
 	pluginRepo   *pg.PluginRepo
 	storage      *s3.PluginStorage
+	metrics      *metrics.Collector
 	dockerClient *client.Client
 	buildDir     string
 }
@@ -36,6 +38,7 @@ type Config struct {
 func NewService(
 	pluginRepo *pg.PluginRepo,
 	storage *s3.PluginStorage,
+	metricsCollector *metrics.Collector,
 	cfg Config,
 ) (*Service, error) {
 	var dockerClient *client.Client
@@ -58,6 +61,7 @@ func NewService(
 		builder:      b,
 		pluginRepo:   pluginRepo,
 		storage:      storage,
+		metrics:      metricsCollector,
 		dockerClient: dockerClient,
 		buildDir:     cfg.BuildDir,
 	}, nil
@@ -178,6 +182,11 @@ func (s *Service) buildPlugin(ctx context.Context, pluginID uuid.UUID, gitURL, r
 	if err := s.pluginRepo.Update(ctx, plugin); err != nil {
 		logError("failed to update plugin", err)
 		return
+	}
+
+	// Record success metric
+	if s.metrics != nil {
+		s.metrics.PluginBuildSuccess(loadResult.Manifest.Name, loadResult.Manifest.Version, buildResult.Duration.Seconds())
 	}
 
 	// Cleanup build directory
