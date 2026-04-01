@@ -29,7 +29,7 @@ func NewRouter() *Router {
 	mux.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"https://*", "http://*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Plugin-Name"},
 		ExposedHeaders:   []string{"Link"},
 		AllowCredentials: true,
 		MaxAge:           300,
@@ -81,6 +81,9 @@ func SetupRoutes(r *Router, handlers *Handlers) {
 	// Metrics endpoint (Prometheus format)
 	r.Get("/metrics", handlers.Metrics)
 
+	// WebSocket endpoint
+	r.Get("/ws", handlers.WebSocket)
+
 	// API v1
 	r.Mount("/api/v1", apiV1Router(handlers))
 }
@@ -104,19 +107,27 @@ func apiV1Router(h *Handlers) http.Handler {
 	r.Route("/metrics", func(r chi.Router) {
 		r.Get("/", h.ListMetrics)
 		r.Get("/{name}", h.GetMetric)
+		r.Post("/query", h.QueryMetrics)
+		r.Get("/names", h.MetricNames)
+		r.Get("/{metric}/labels/{label}", h.LabelValues)
 	})
 
 	// Filters
 	r.Route("/filters", func(r chi.Router) {
 		r.Get("/", h.ListFilters)
+		r.Get("/{id}", h.GetFilter)
 		r.Post("/", h.CreateFilter)
 		r.Delete("/{id}", h.DeleteFilter)
+		r.Post("/execute", h.ExecuteFilter)
 	})
 
-	// Dashboard
+	// Dashboards
 	r.Route("/dashboard", func(r chi.Router) {
 		r.Get("/", h.GetDashboard)
+		r.Get("/list", h.ListDashboards)
+		r.Post("/", h.CreateDashboard)
 		r.Put("/", h.UpdateDashboard)
+		r.Delete("/{id}", h.DeleteDashboard)
 	})
 
 	return r
