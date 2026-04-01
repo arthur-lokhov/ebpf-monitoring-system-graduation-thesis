@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/epbf-monitoring/epbf-monitor/internal/api"
+	"github.com/epbf-monitoring/epbf-monitor/internal/filter"
 	"github.com/epbf-monitoring/epbf-monitor/internal/logger"
 	"github.com/epbf-monitoring/epbf-monitor/internal/metrics"
 	"github.com/epbf-monitoring/epbf-monitor/internal/plugin"
@@ -61,9 +62,9 @@ func main() {
 		logger.Debug("DB_NAME overridden", "database", database)
 	}
 
-	logger.Debug("PostgreSQL config", 
-		"host", dbConfig.Host, 
-		"port", dbConfig.Port, 
+	logger.Debug("PostgreSQL config",
+		"host", dbConfig.Host,
+		"port", dbConfig.Port,
 		"user", dbConfig.User,
 		"database", dbConfig.Database)
 
@@ -126,10 +127,16 @@ func main() {
 	// Initialize repositories
 	var pluginRepo *postgres.PluginRepo
 	var pluginStorage *s3.PluginStorage
+	var filterRepo *postgres.FilterRepo
+	var dashboardRepo *postgres.DashboardRepo
+	var metricRepo *postgres.MetricRepo
 
 	if db != nil {
 		pluginRepo = postgres.NewPluginRepo(db)
-		logger.Info("✅ Plugin repository initialized")
+		filterRepo = postgres.NewFilterRepo(db)
+		dashboardRepo = postgres.NewDashboardRepo(db)
+		metricRepo = postgres.NewMetricRepo(db)
+		logger.Info("✅ All repositories initialized")
 	}
 
 	if s3Client != nil {
@@ -137,9 +144,18 @@ func main() {
 		logger.Info("✅ Plugin storage initialized")
 	}
 
-	// Initialize metrics collector BEFORE plugin service
+	// Initialize metrics collector
 	metricsCollector := metrics.NewCollector()
 	logger.Info("✅ Metrics collector initialized")
+
+	// Initialize filter engine
+	filterEngine := filter.NewEngine()
+	filterEngine.StartCleanupRoutine(ctx)
+	logger.Info("✅ Filter engine initialized")
+
+	// Initialize metrics service
+	metricsService := metrics.NewService(metricsCollector, filterEngine)
+	logger.Info("✅ Metrics service initialized")
 
 	// Initialize plugin service
 	var pluginService *plugin.Service
@@ -178,7 +194,12 @@ func main() {
 	// Initialize API handlers
 	handlers := api.NewHandlers()
 	handlers.SetMetrics(metricsCollector)
+	handlers.SetMetricsService(metricsService)
 	handlers.SetPluginService(pluginService)
+	handlers.SetFilterEngine(filterEngine)
+	handlers.SetFilterRepo(filterRepo)
+	handlers.SetDashboardRepo(dashboardRepo)
+	handlers.SetMetricRepo(metricRepo)
 	logger.Info("🔌 API handlers initialized")
 
 	// Setup router
@@ -200,7 +221,8 @@ func main() {
 	logger.Info("📊 Endpoints:",
 		"health", fmt.Sprintf("http://localhost:%s/health", port),
 		"metrics", fmt.Sprintf("http://localhost:%s/metrics", port),
-		"api", fmt.Sprintf("http://localhost:%s/api/v1", port))
+		"api", fmt.Sprintf("http://localhost:%s/api/v1", port),
+		"ws", fmt.Sprintf("ws://localhost:%s/ws", port))
 
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
