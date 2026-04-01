@@ -6,74 +6,99 @@ services:
     image: postgres:15-alpine
     container_name: epbf-postgres
     environment:
-      POSTGRES_USER: epbf
-      POSTGRES_PASSWORD: epbf_password
-      POSTGRES_DB: epbf
+      POSTGRES_USER: ${POSTGRES_USER:-epbf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-epbf_password}
+      POSTGRES_DB: ${POSTGRES_DB:-epbf}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ${POSTGRES_DATA_PATH:-./postgres/data}:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U epbf"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-epbf}"]
+      interval: ${POSTGRES_HEALTH_INTERVAL:-5s}
+      timeout: ${POSTGRES_HEALTH_TIMEOUT:-5s}
+      retries: ${POSTGRES_HEALTH_RETRIES:-5}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    networks:
+      - epbf-network
 
   # Garage S3-compatible object storage
   garage:
     image: dxflrs/garage:v2.2.0
     container_name: epbf-garage
     network_mode: "host"
-    restart: unless-stopped
+    restart: ${RESTART_POLICY:-unless-stopped}
     volumes:
-      - ./garage/data:/garage-data
+      - ${GARAGE_DATA_PATH:-./garage/data}:/garage-data
       - ./garage/config.toml:/etc/garage.toml:ro
+    environment:
+      - GARAGE_ADMIN_TOKEN=${GARAGE_ADMIN_TOKEN:-GKfa5b35bb8a522ebb83c006b8}
+      - GARAGE_SECRET_KEY=${GARAGE_SECRET_KEY:-921529f4512a60d4f2e947a149f5289fb3ade82c1c10f0761397f80b328d682f}
+      - GARAGE_REGION=${GARAGE_REGION:-garage}
     command: ["/garage", "server"]
     healthcheck:
       test: ["CMD", "/garage", "status"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      interval: ${GARAGE_HEALTH_INTERVAL:-10s}
+      timeout: ${GARAGE_HEALTH_TIMEOUT:-5s}
+      retries: ${GARAGE_HEALTH_RETRIES:-3}
 
   # epbf-monitoring server
   epbf-monitor:
     build:
       context: ..
       dockerfile: deployments/docker/runtime.Dockerfile
+      args:
+        GO_VERSION: ${GO_VERSION:-1.25}
+        CLANG_VERSION: ${CLANG_VERSION:-14}
     container_name: epbf-monitor-server
     ports:
-      - "8080:8080"
+      - "${MONITOR_PORT:-8080}:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    privileged: true
+    privileged: ${PRIVILEGED_MODE:-true}
     cap_add:
       - SYS_ADMIN
       - BPF
       - PERFMON
       - IPC_LOCK
     ulimits:
-      memlock: -1
+      memlock: ${MEMLOCK_LIMIT:--1}
     environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_USER: epbf
-      DB_PASSWORD: epbf_password
-      DB_NAME: epbf
-      S3_ENDPOINT: http://host.docker.internal:3900
-      S3_REGION: garage
-      S3_BUCKET: epbf-plugins
-      S3_ACCESS_KEY: GKfa5b35bb8a522ebb83c006b8
-      S3_SECRET_KEY: 921529f4512a60d4f2e947a149f5289fb3ade82c1c10f0761397f80b328d682f
-      ENABLE_DOCKER: "true"
-      BUILD_DIR: /tmp/epbf-builds
+      # Database configuration
+      DB_HOST: ${POSTGRES_HOST:-postgres}
+      DB_PORT: ${POSTGRES_PORT:-5432}
+      DB_USER: ${POSTGRES_USER:-epbf}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-epbf_password}
+      DB_NAME: ${POSTGRES_DB:-epbf}
+      
+      # S3 configuration
+      S3_ENDPOINT: http://${GARAGE_HOST:-host.docker.internal}:${GARAGE_PORT:-3900}
+      S3_REGION: ${GARAGE_REGION:-garage}
+      S3_BUCKET: ${GARAGE_BUCKET:-epbf-plugins}
+      S3_ACCESS_KEY: ${GARAGE_ADMIN_TOKEN:-GKfa5b35bb8a522ebb83c006b8}
+      S3_SECRET_KEY: ${GARAGE_SECRET_KEY:-921529f4512a60d4f2e947a149f5289fb3ade82c1c10f0761397f80b328d682f}
+      
+      # Build configuration
+      ENABLE_DOCKER: ${ENABLE_DOCKER:-true}
+      BUILD_DIR: ${BUILD_DIR:-/tmp/epbf-builds}
+      BUILDER_IMAGE: ${BUILDER_IMAGE:-epbf-monitor-builder:latest}
+      
+      # Logging
+      LOG_LEVEL: ${MONITOR_LOG_LEVEL:-info}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /tmp/epbf-builds:/tmp/epbf-builds
-      - ../plugins:/workspace/plugins
+      - ${BUILD_DIR:-/tmp/epbf-builds}:/tmp/epbf-builds
+      - ${PLUGINS_PATH:-../plugins}:/workspace/plugins
     depends_on:
       postgres:
         condition: service_healthy
-    restart: unless-stopped
+    restart: ${RESTART_POLICY:-unless-stopped}
+    networks:
+      - epbf-network
 
 volumes:
   postgres_data:
+
+networks:
+  epbf-network:
+    driver: bridge
