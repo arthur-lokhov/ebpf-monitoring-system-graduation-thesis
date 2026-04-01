@@ -1,0 +1,69 @@
+name: process-monitor
+version: 1.0.0
+description: Мониторинг процессов - запуск, завершение, использование CPU
+author: epbf-monitoring
+
+ebpf:
+  entry: ebpf/main.c
+  programs:
+    - name: trace_sched_process_fork
+      type: tracepoint
+      attach: sched/sched_process_fork
+    - name: trace_sched_process_exit
+      type: tracepoint
+      attach: sched/sched_process_exit
+    - name: trace_sched_switch
+      type: tracepoint
+      attach: sched/sched_switch
+
+wasm:
+  entry: wasm/main.c
+  sdk_version: "1.0"
+
+metrics:
+  - name: process_starts_total
+    type: counter
+    help: Total number of process starts
+    labels: [comm, ppid]
+
+  - name: process_exits_total
+    type: counter
+    help: Total number of process exits
+    labels: [comm, exit_code]
+
+  - name: process_duration_seconds
+    type: histogram
+    help: Process duration histogram
+    buckets: [0.001, 0.01, 0.1, 1.0, 10.0, 60.0, 300.0]
+    labels: [comm]
+
+  - name: active_processes
+    type: gauge
+    help: Current number of active processes
+    labels: []
+
+  - name: cpu_time_seconds_total
+    type: counter
+    help: Total CPU time consumed by processes
+    labels: [comm]
+
+  - name: context_switches_total
+    type: counter
+    help: Total context switches
+    labels: [prev_comm, next_comm]
+
+filters:
+  - name: processes_per_minute
+    expression: per_minute(process_starts_total)
+
+  - name: process_duration_p50
+    expression: histogram_quantile(0.50, process_duration_seconds)
+
+  - name: process_duration_p99
+    expression: histogram_quantile(0.99, process_duration_seconds)
+
+  - name: cpu_time_per_second
+    expression: rate(cpu_time_seconds_total[1m])
+
+  - name: context_switches_per_second
+    expression: rate(context_switches_total[1m])

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build script for container-monitor plugin
+# Build script for process-monitor plugin
 
 set -e
 
@@ -7,7 +7,7 @@ PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$PLUGIN_DIR/build"
 OUTPUT_DIR="$PLUGIN_DIR/output"
 
-echo "🔨 Building container-monitor plugin..."
+echo "🔨 Building process-monitor plugin..."
 echo "   Source: $PLUGIN_DIR"
 echo "   Build:  $BUILD_DIR"
 echo "   Output: $OUTPUT_DIR"
@@ -40,11 +40,6 @@ clang -O2 -g -Wall -Wextra \
     -Wl,--export=epbf_init \
     -Wl,--export=process_events \
     -Wl,--export=epbf_cleanup \
-    -Wl,--export=test_simulate_start \
-    -Wl,--export=test_simulate_stop \
-    -Wl,--export=test_get_total_starts \
-    -Wl,--export=test_get_total_stops \
-    -Wl,--export=test_get_total_connections \
     -Wl,--export=__data_end \
     -Wl,--export=__heap_base \
     -Wl,--strip-debug \
@@ -60,9 +55,3 @@ ls -lh "$BUILD_DIR/"
 
 echo ""
 echo "✅ Build complete!"
-echo ""
-echo "To test locally:"
-echo "  1. Copy build/program.o and build/plugin.wasm to your epbf-monitoring instance"
-echo "  2. Or use: curl -X POST http://localhost:8080/api/v1/plugins \\"
-echo "     -H 'Content-Type: application/json' \\"
-echo "     -d '{\"git_url\": \"file://$PLUGIN_DIR\"}'"

@@ -1,0 +1,74 @@
+name: disk-monitor
+version: 1.0.0
+description: Мониторинг дисковых операций и использования диска
+author: epbf-monitoring
+
+ebpf:
+  entry: ebpf/main.c
+  programs:
+    - name: trace_vfs_read
+      type: kprobe
+      attach: vfs_read
+    - name: trace_vfs_write
+      type: kprobe
+      attach: vfs_write
+    - name: trace_block_rq_issue
+      type: tracepoint
+      attach: block/block_rq_issue
+
+wasm:
+  entry: wasm/main.c
+  sdk_version: "1.0"
+
+metrics:
+  - name: disk_read_bytes_total
+    type: counter
+    help: Total bytes read from disk
+    labels: [device, filename]
+
+  - name: disk_write_bytes_total
+    type: counter
+    help: Total bytes written to disk
+    labels: [device, filename]
+
+  - name: disk_read_ops_total
+    type: counter
+    help: Total disk read operations
+    labels: [device]
+
+  - name: disk_write_ops_total
+    type: counter
+    help: Total disk write operations
+    labels: [device]
+
+  - name: disk_io_time_seconds_total
+    type: counter
+    help: Total time spent in disk I/O
+    labels: [device]
+
+  - name: disk_io_size_bytes
+    type: histogram
+    help: Disk I/O size histogram
+    buckets: [512, 4096, 65536, 1048576, 10485760]
+    labels: [operation]
+
+  - name: disk_queue_length
+    type: gauge
+    help: Current disk queue length
+    labels: [device]
+
+filters:
+  - name: read_throughput
+    expression: rate(disk_read_bytes_total[1m])
+
+  - name: write_throughput
+    expression: rate(disk_write_bytes_total[1m])
+
+  - name: iops
+    expression: sum(rate(disk_read_ops_total[1m])) + sum(rate(disk_write_ops_total[1m]))
+
+  - name: io_size_p50
+    expression: histogram_quantile(0.50, disk_io_size_bytes)
+
+  - name: io_size_p99
+    expression: histogram_quantile(0.99, disk_io_size_bytes)

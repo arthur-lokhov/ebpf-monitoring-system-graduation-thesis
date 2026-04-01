@@ -1,133 +1,105 @@
 # Container Monitor Plugin
 
-eBPF плагин для мониторинга событий контейнеров Docker.
+Monitors Docker container lifecycle events using eBPF and processes them with WASM.
 
-## Возможности
+## Features
 
-- 🚀 Отслеживание запуска контейнеров (execve)
-- 🛑 Отслеживание остановки контейнеров (kill signal)
-- 🌐 Мониторинг сетевых подключений
-- 📊 Метрики в реальном времени
-- 🔔 События через ring buffer
+- Track container starts (via execve tracepoint)
+- Track container stops (via kill tracepoint)
+- Monitor network connections from containers
+- Real-time metrics emission
 
-## Метрики
+## Metrics
 
-| Метрика | Тип | Описание | Labels |
-|---------|-----|----------|--------|
-| `container_starts_total` | Counter | Всего запусков контейнеров | container_id, image, command |
-| `container_stops_total` | Counter | Всего остановок контейнеров | container_id, signal |
-| `network_connections_total` | Counter | Всего сетевых подключений | container_id, dest_ip, dest_port |
-| `active_containers` | Gauge | Активные контейнеры | - |
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `container_starts_total` | Counter | `container_id`, `image`, `command` | Total number of container starts |
+| `container_stops_total` | Counter | `container_id`, `signal` | Total number of container stops |
+| `network_connections_total` | Counter | `container_id`, `dest_ip`, `dest_port` | Network connections from containers |
+| `active_containers` | Gauge | - | Current number of active containers |
 
-## Фильтры
+## Saved Filters
+
+- `starts_per_minute` - Container starts per minute
+- `connections_per_second` - Network connections rate
+- `active_containers_avg` - Average active containers
+
+## eBPF Programs
+
+| Program | Type | Attachment Point |
+|---------|------|------------------|
+| `trace_container_start` | Tracepoint | `syscalls/sys_enter_execve` |
+| `trace_container_stop` | Tracepoint | `syscalls/sys_enter_kill` |
+| `trace_network_connect` | Tracepoint | `syscalls/sys_enter_connect` |
+
+## Building
+
+```bash
+./build.sh
+```
+
+Or with Docker:
+
+```bash
+./build-docker.sh
+```
+
+## Installing
+
+```bash
+curl -X POST http://localhost:8080/api/v1/plugins \
+  -H "Content-Type: application/json" \
+  -d '{"git_url": "file://'"$(pwd)"'"}'
+```
+
+## Example Queries
 
 ```promql
-# Запуски контейнеров в минуту
+# Container starts per minute
 per_minute(container_starts_total)
 
-# Сетевые подключения в секунду
+# Network connections per second
 rate(network_connections_total[1m])
 
-# Среднее число активных контейнеров
+# Active containers average
 avg(active_containers)
 ```
 
-## Сборка
-
-### Требования
-
-- Clang 14+ с поддержкой BPF
-- Clang с поддержкой WASM32
-- Linux headers
-
-### Команды
-
-```bash
-# Локальная сборка
-./build.sh
-
-# Или через make
-make build
-```
-
-### Артефакты
-
-После сборки в директории `build/`:
-- `program.o` - eBPF объект
-- `plugin.wasm` - WASM модуль
-
-## Установка
-
-### Вариант 1: Через API
-
-```bash
-curl -X POST http://localhost:8080/api/v1/plugins \
-  -H "Content-Type: application/json" \
-  -d '{
-    "git_url": "https://github.com/your-org/container-monitor-plugin.git"
-  }'
-```
-
-### Вариант 2: Локально
-
-```bash
-# Скопируйте артефакты в директорию плагинов
-cp build/program.o /path/to/epbf-monitoring/plugins/
-cp build/plugin.wasm /path/to/epbf-monitoring/plugins/
-
-# Или используйте file:// URL
-curl -X POST http://localhost:8080/api/v1/plugins \
-  -H "Content-Type: application/json" \
-  -d "{\"git_url\": \"file://$(pwd)\"}"
-```
-
-## Структура
+## Architecture
 
 ```
-container-monitor/
-├── manifest.yml          # Метаданные плагина
-├── ebpf/
-│   └── main.c           # eBPF программа
-├── wasm/
-│   └── main.c           # WASM обработчик
-├── build/               # Артефакты сборки
-├── build.sh            # Скрипт сборки
-└── README.md           # Этот файл
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   eBPF Kernel   │────▶│   WASM User     │────▶│   Prometheus    │
+│   - execve      │     │   - Event proc  │     │   Metrics       │
+│   - kill        │     │   - Metrics     │     │                 │
+│   - connect     │     │   - Aggregation │     │                 │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
 ```
 
-## eBPF программы
+## Troubleshooting
 
-### trace_container_start
-- **Hook:** `tracepoint/syscalls/sys_enter_execve`
-- **Описание:** Перехватывает запуск новых процессов (контейнеров)
-- **Данные:** PID, PPID, comm, filename
+### No metrics appearing
 
-### trace_container_stop
-- **Hook:** `tracepoint/syscalls/sys_enter_kill`
-- **Описание:** Перехватывает сигналы остановки
-- **Данные:** PID, signal number
+1. Check if plugin is enabled:
+   ```bash
+   curl http://localhost:8080/api/v1/plugins
+   ```
 
-### trace_network_connect
-- **Hook:** `tracepoint/syscalls/sys_enter_connect`
-- **Описание:** Перехватывает сетевые подключения
-- **Данные:** PID, comm
+2. Check eBPF programs loaded:
+   ```bash
+   bpftool prog list
+   ```
 
-## Отладка
+3. Check ring buffer events:
+   ```bash
+   bpftool map dump id <map_id>
+   ```
 
-### Просмотр событий eBPF
+### High memory usage
 
-```bash
-# Через bpftool
-bpftool prog dump log <program_id>
+- Reduce `MAX_CONTAINERS` in WASM code
+- Decrease ring buffer size in eBPF
 
-# Через trace_pipe
-cat /sys/kernel/debug/tracing/trace_pipe
-```
+## License
 
-### Логи WASM
-
-WASM плагин логирует события через `epbf_log()`. Логи доступны в stdout epbf-monitor.
-
-## Лицензия
-
-MIT
+Apache 2.0

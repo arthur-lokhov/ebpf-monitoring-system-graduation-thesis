@@ -1,0 +1,61 @@
+name: network-monitor
+version: 1.0.0
+description: Мониторинг сетевых соединений и трафика
+author: epbf-monitoring
+
+ebpf:
+  entry: ebpf/main.c
+  programs:
+    - name: trace_tcp_connect
+      type: tracepoint
+      attach: syscalls/sys_enter_connect
+    - name: trace_tcp_sendmsg
+      type: kprobe
+      attach: tcp_sendmsg
+    - name: trace_tcp_recvmsg
+      type: kprobe
+      attach: tcp_recvmsg
+
+wasm:
+  entry: wasm/main.c
+  sdk_version: "1.0"
+
+metrics:
+  - name: tcp_connections_total
+    type: counter
+    help: Total TCP connections established
+    labels: [dest_ip, dest_port, proto]
+
+  - name: bytes_sent_total
+    type: counter
+    help: Total bytes sent
+    labels: [dest_ip, dest_port]
+
+  - name: bytes_received_total
+    type: counter
+    help: Total bytes received
+    labels: [src_ip, src_port]
+
+  - name: connection_duration_seconds
+    type: histogram
+    help: Connection duration histogram
+    buckets: [0.01, 0.1, 1.0, 10.0, 60.0]
+    labels: [dest_port]
+
+  - name: active_connections
+    type: gauge
+    help: Current active connections
+    labels: [dest_port]
+
+filters:
+  - name: connections_per_second
+    expression: rate(tcp_connections_total[1m])
+
+  - name: bytes_per_second
+    expression: sum by (dest_port) (rate(bytes_sent_total[1m]))
+
+  - name: connection_duration_p99
+    expression: histogram_quantile(0.99, connection_duration_seconds)
+
+  - name: total_throughput
+    expression: sum(rate(bytes_sent_total[1m])) + sum(rate(bytes_received_total[1m]))
