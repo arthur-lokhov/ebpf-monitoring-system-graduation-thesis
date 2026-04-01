@@ -47,16 +47,16 @@ type Loader struct {
 // NewLoader creates a new eBPF loader
 func NewLoader() (*Loader, error) {
 	logger.Info("Creating eBPF loader...")
-	
+
 	// Remove resource limits for eBPF (may fail in Docker without privileged mode)
 	if err := rlimit.RemoveMemlock(); err != nil {
 		// This is expected in Docker containers without CAP_SYS_RESOURCE
 		// eBPF will still work for small programs
 		logger.Debug("Memlock limit not removed (expected in Docker)", "error", err.Error())
 	}
-	
+
 	logger.Info("✅ eBPF loader created")
-	
+
 	return &Loader{
 		programs: make(map[uuid.UUID]*Program),
 	}, nil
@@ -66,9 +66,9 @@ func NewLoader() (*Loader, error) {
 func (l *Loader) LoadProgram(ctx context.Context, pluginID uuid.UUID, name string, programBytes []byte, eventHandler func(ContainerEvent)) (*Program, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	
+
 	logger.Info("Loading eBPF program", "plugin_id", pluginID.String(), "name", name, "size", len(programBytes))
-	
+
 	// Load collection spec from bytes
 	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(programBytes))
 	if err != nil {
@@ -77,7 +77,7 @@ func (l *Loader) LoadProgram(ctx context.Context, pluginID uuid.UUID, name strin
 			"error", err.Error())
 		return nil, fmt.Errorf("failed to load collection spec: %w", err)
 	}
-	
+
 	// Load collection
 	collection, err := ebpf.NewCollection(spec)
 	if err != nil {
@@ -86,17 +86,17 @@ func (l *Loader) LoadProgram(ctx context.Context, pluginID uuid.UUID, name strin
 			"error", err.Error())
 		return nil, fmt.Errorf("failed to load collection: %w", err)
 	}
-	
+
 	// Find ringbuf map
 	var ringBufMap *ebpf.Map
-	for name, m := range collection.Maps {
+	for mapName, m := range collection.Maps {
 		if m.Type() == ebpf.RingBuf {
 			ringBufMap = m
-			logger.Debug("Found ringbuf map", "name", name, "plugin_id", pluginID.String())
+			logger.Debug("Found ringbuf map", "name", mapName, "plugin_id", pluginID.String())
 			break
 		}
 	}
-	
+
 	// Create ringbuf reader
 	var ringBufReader *ringbuf.Reader
 	if ringBufMap != nil {
@@ -110,20 +110,31 @@ func (l *Loader) LoadProgram(ctx context.Context, pluginID uuid.UUID, name strin
 			return nil, fmt.Errorf("failed to create ringbuf reader: %w", err)
 		}
 	}
-	
-	// Attach programs
-	var links []link.Link
+
+	// Attach programs based on their type
+	links := make([]link.Link, 0)
 	for progName, prog := range collection.Programs {
-		logger.Debug("Loading eBPF program", "name", progName, "type", prog.Type())
-		
-		// TODO: Attach based on program type
-		// For now, just store the link
-		_ = prog
+		logger.Debug("Attaching eBPF program", "name", progName, "type", prog.Type(), "plugin_id", pluginID.String())
+
+		// Try to attach based on program type
+		attached, err := l.attachProgram(prog, progName)
+		if err != nil {
+			logger.Warn("Failed to attach program",
+				"plugin_id", pluginID.String(),
+				"name", progName,
+				"error", err.Error())
+			// Continue anyway - program might be for manual attachment
+		} else if attached != nil {
+			links = append(links, attached)
+			logger.Info("Attached eBPF program",
+				"plugin_id", pluginID.String(),
+				"name", progName)
+		}
 	}
-	
+
 	// Create context
 	ctx, cancel := context.WithCancel(ctx)
-	
+
 	// Create program
 	program := &Program{
 		ID:           pluginID,
@@ -135,37 +146,115 @@ func (l *Loader) LoadProgram(ctx context.Context, pluginID uuid.UUID, name strin
 		cancel:       cancel,
 		eventHandler: eventHandler,
 	}
-	
+
 	l.programs[pluginID] = program
-	
+
 	// Start reading events
 	if ringBufReader != nil {
 		go program.readEvents()
 	}
-	
+
 	logger.Info("✅ eBPF program loaded",
 		"plugin_id", pluginID.String(),
 		"programs", len(collection.Programs),
-		"maps", len(collection.Maps))
-	
+		"maps", len(collection.Maps),
+		"links", len(links))
+
 	return program, nil
+}
+
+// attachProgram attempts to attach an eBPF program based on its type
+func (l *Loader) attachProgram(prog *ebpf.Program, progName string) (link.Link, error) {
+	progType := prog.Type()
+
+	logger.Debug("Program info",
+		"name", progName,
+		"type", progType)
+
+	// Try different attachment methods based on program type
+	switch progType {
+	case ebpf.TracePoint:
+		// Try to attach as tracepoint
+		// Common tracepoints for monitoring
+		tracepoints := []struct{ group, name string }{
+			{"syscalls", "sys_enter_open"},
+			{"syscalls", "sys_enter_openat"},
+			{"syscalls", "sys_enter_execve"},
+			{"syscalls", "sys_enter_connect"},
+			{"syscalls", "sys_enter_sendto"},
+			{"syscalls", "sys_enter_recvfrom"},
+			{"sched", "sched_process_fork"},
+			{"sched", "sched_process_exit"},
+		}
+
+		for _, tp := range tracepoints {
+			lk, err := link.Tracepoint(tp.group, tp.name, prog, nil)
+			if err == nil {
+				return lk, nil
+			}
+		}
+		// If no specific tracepoint works, return without attachment
+		return nil, nil
+
+	case ebpf.Kprobe:
+		// Try common kprobes
+		kprobes := []string{
+			"tcp_connect",
+			"tcp_sendmsg",
+			"tcp_recvmsg",
+			"do_sys_open",
+			"do_sys_openat2",
+			"security_file_open",
+		}
+
+		for _, kp := range kprobes {
+			lk, err := link.Kprobe(kp, prog, nil)
+			if err == nil {
+				return lk, nil
+			}
+		}
+		return nil, nil
+
+	case ebpf.XDP:
+		// XDP programs need to be attached to a specific interface
+		// This is typically done externally
+		return nil, fmt.Errorf("XDP program requires manual attachment to interface")
+
+	case ebpf.SocketFilter:
+		// Socket filter programs are attached to sockets
+		return nil, fmt.Errorf("socket filter program requires manual attachment")
+
+	case ebpf.SchedCLS:
+		// TC (traffic control) programs
+		return nil, fmt.Errorf("TC program requires manual attachment to interface")
+
+	case ebpf.CGroupSKB:
+		// CGroup programs
+		return nil, fmt.Errorf("cgroup program requires manual attachment to cgroup")
+
+	default:
+		logger.Debug("Unknown program type, skipping attachment",
+			"name", progName,
+			"type", progType)
+		return nil, nil
+	}
 }
 
 // readEvents reads events from ringbuf
 func (p *Program) readEvents() {
 	logger.Debug("Starting ringbuf event reader", "plugin_id", p.ID.String())
-	
+
 	for {
 		select {
 		case <-p.ctx.Done():
 			logger.Debug("Ringbuf event reader stopped", "plugin_id", p.ID.String())
 			return
-			
+
 		default:
 			if p.RingBuf == nil {
 				continue
 			}
-			
+
 			record, err := p.RingBuf.Read()
 			if err != nil {
 				logger.Error("Ringbuf read error",
@@ -173,11 +262,11 @@ func (p *Program) readEvents() {
 					"error", err.Error())
 				continue
 			}
-			
+
 			// Parse event
 			if len(record.RawSample) >= 320 { // Minimum size for ContainerEvent
 				event := parseContainerEvent(record.RawSample)
-				
+
 				p.mu.RLock()
 				if p.eventHandler != nil {
 					p.eventHandler(event)
@@ -191,14 +280,14 @@ func (p *Program) readEvents() {
 // parseContainerEvent parses raw bytes into ContainerEvent
 func parseContainerEvent(data []byte) ContainerEvent {
 	var event ContainerEvent
-	
+
 	event.Timestamp = binary.LittleEndian.Uint64(data[0:8])
 	event.PID = binary.LittleEndian.Uint32(data[8:12])
 	event.PPID = binary.LittleEndian.Uint32(data[12:16])
 	copy(event.Comm[:], data[16:32])
 	copy(event.Filename[:], data[32:288])
 	event.Type = data[288]
-	
+
 	return event
 }
 
@@ -206,12 +295,12 @@ func parseContainerEvent(data []byte) ContainerEvent {
 func (l *Loader) GetProgram(programID uuid.UUID) (*Program, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	
+
 	prog, ok := l.programs[programID]
 	if !ok {
 		return nil, fmt.Errorf("program not found: %s", programID.String())
 	}
-	
+
 	return prog, nil
 }
 
@@ -219,45 +308,45 @@ func (l *Loader) GetProgram(programID uuid.UUID) (*Program, error) {
 func (l *Loader) UnloadProgram(programID uuid.UUID) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	
+
 	prog, ok := l.programs[programID]
 	if !ok {
 		return fmt.Errorf("program not found: %s", programID.String())
 	}
-	
+
 	logger.Info("Unloading eBPF program", "plugin_id", programID.String())
-	
+
 	// Cancel context
 	prog.cancel()
-	
+
 	// Close ringbuf
 	if prog.RingBuf != nil {
 		prog.RingBuf.Close()
 	}
-	
+
 	// Close links
 	for _, lk := range prog.Links {
 		lk.Close()
 	}
-	
+
 	// Close collection
 	prog.Collection.Close()
-	
+
 	// Remove from programs
 	delete(l.programs, programID)
-	
+
 	logger.Info("✅ eBPF program unloaded", "plugin_id", programID.String())
-	
+
 	return nil
 }
 
 // Close closes the loader
 func (l *Loader) Close() error {
 	logger.Info("Closing eBPF loader...")
-	
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	
+
 	// Unload all programs
 	for id := range l.programs {
 		if err := l.UnloadProgram(id); err != nil {
@@ -266,7 +355,7 @@ func (l *Loader) Close() error {
 				"error", err.Error())
 		}
 	}
-	
+
 	logger.Info("✅ eBPF loader closed")
 	return nil
 }
