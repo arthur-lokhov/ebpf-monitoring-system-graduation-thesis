@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/client"
+	"github.com/epbf-monitoring/epbf-monitor/internal/filter"
 	"github.com/epbf-monitoring/epbf-monitor/internal/logger"
 	"github.com/epbf-monitoring/epbf-monitor/internal/metrics"
 	"github.com/epbf-monitoring/epbf-monitor/internal/plugin/builder"
@@ -25,6 +26,7 @@ type Service struct {
 	storage      *s3.PluginStorage
 	runtime      *Runtime
 	metrics      *metrics.Collector
+	filterEngine *filter.Engine
 	dockerClient *client.Client
 	buildDir     string
 }
@@ -41,15 +43,24 @@ func NewService(
 	pluginRepo *pg.PluginRepo,
 	storage *s3.PluginStorage,
 	metricsCollector *metrics.Collector,
+	filterEngine *filter.Engine,
 	cfg Config,
 ) (*Service, error) {
 	var dockerClient *client.Client
 	var err error
 
 	if cfg.EnableDocker {
-		dockerClient, err = client.NewClientWithOpts(client.FromEnv)
+		// Try standard Docker socket first, then fallback to env
+		dockerClient, err = client.NewClientWithOpts(
+			client.WithHost("unix:///var/run/docker.sock"),
+			client.WithAPIVersionNegotiation(),
+		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create docker client: %w", err)
+			// Fallback to env-based configuration
+			dockerClient, err = client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+			if err != nil {
+				return nil, fmt.Errorf("failed to create docker client: %w", err)
+			}
 		}
 	}
 
@@ -58,8 +69,8 @@ func NewService(
 		return nil, fmt.Errorf("failed to create builder: %w", err)
 	}
 
-	// Create runtime manager
-	runtimeManager, err := NewRuntime(storage, metricsCollector)
+	// Create runtime manager (pass filterEngine)
+	runtimeManager, err := NewRuntime(storage, metricsCollector, filterEngine)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create runtime manager: %w", err)
 	}
@@ -71,6 +82,7 @@ func NewService(
 		storage:      storage,
 		runtime:      runtimeManager,
 		metrics:      metricsCollector,
+		filterEngine: filterEngine,
 		dockerClient: dockerClient,
 		buildDir:     cfg.BuildDir,
 	}, nil
@@ -154,21 +166,9 @@ func (s *Service) buildPlugin(ctx context.Context, pluginID uuid.UUID, gitURL, r
 		return
 	}
 
-	wasmData, err := readFile(buildResult.WASMFile)
-	if err != nil {
-		s.handleBuildError(ctx, pluginID, fmt.Errorf("failed to read WASM file: %w", err), "")
-		return
-	}
-
 	ebpfKey, err := s.storage.UploadEBPF(ctx, pluginID, ebpfData, int64(ebpfData.Len()))
 	if err != nil {
 		s.handleBuildError(ctx, pluginID, fmt.Errorf("failed to upload eBPF: %w", err), "")
-		return
-	}
-
-	wasmKey, err := s.storage.UploadWASM(ctx, pluginID, wasmData, int64(wasmData.Len()))
-	if err != nil {
-		s.handleBuildError(ctx, pluginID, fmt.Errorf("failed to upload WASM: %w", err), "")
 		return
 	}
 
@@ -181,9 +181,8 @@ func (s *Service) buildPlugin(ctx context.Context, pluginID uuid.UUID, gitURL, r
 		GitCommit: loadResult.GitCommit,
 		GitBranch: ref,
 		EBPFS3Key: ebpfKey,
-		WASMS3Key: wasmKey,
 		Manifest:  manifestToMap(loadResult.Manifest),
-		Status:    string(pg.PluginStatusReady),
+		Status:    string(pg.PluginStatusStopped),
 		BuildLog:  pgtype.Text{String: buildResult.BuildLog, Valid: true},
 		UpdatedAt: time.Now(),
 	}
@@ -198,8 +197,8 @@ func (s *Service) buildPlugin(ctx context.Context, pluginID uuid.UUID, gitURL, r
 		s.metrics.PluginBuildSuccess(loadResult.Manifest.Name, loadResult.Manifest.Version, buildResult.Duration.Seconds())
 	}
 
-	// Start plugin runtime
-	if err := s.runtime.StartPlugin(ctx, pluginID, loadResult.Manifest.Name, loadResult.Manifest.Version, ebpfKey, wasmKey, manifestToMap(loadResult.Manifest)); err != nil {
+	// Start plugin runtime (eBPF only)
+	if err := s.runtime.StartPlugin(ctx, pluginID, loadResult.Manifest.Name, loadResult.Manifest.Version, ebpfKey, manifestToMap(loadResult.Manifest)); err != nil {
 		logger.Error("Failed to start plugin runtime",
 			"plugin_id", pluginID.String(),
 			"error", err.Error())
@@ -284,18 +283,38 @@ func (s *Service) DeletePlugin(ctx context.Context, id uuid.UUID) error {
 func (s *Service) EnablePlugin(ctx context.Context, id uuid.UUID) error {
 	logger.Info("Enabling plugin", "plugin_id", id.String())
 
+	// Get plugin from DB
+	plugin, err := s.pluginRepo.GetByID(ctx, id)
+	if err != nil {
+		return fmt.Errorf("failed to get plugin: %w", err)
+	}
+
+	if plugin == nil {
+		return fmt.Errorf("plugin not found")
+	}
+
 	// Update status in DB
 	if err := s.pluginRepo.UpdateStatus(ctx, id, pg.PluginStatusReady, "", ""); err != nil {
 		return err
 	}
 
-	// Enable runtime
-	if err := s.runtime.EnablePlugin(id); err != nil {
-		return err
+	// Start plugin runtime with eBPF from S3
+	if plugin.EBPFS3Key != "" {
+		if err := s.runtime.StartPlugin(ctx, id, plugin.Name, plugin.Version, plugin.EBPFS3Key, manifestToMapFromPlugin(plugin)); err != nil {
+			logger.Error("Failed to start plugin runtime",
+				"plugin_id", id.String(),
+				"error", err.Error())
+			// Continue anyway - runtime is optional
+		}
 	}
 
 	logger.Info("✅ Plugin enabled", "plugin_id", id.String())
 	return nil
+}
+
+// manifestToMapFromPlugin converts plugin manifest to map
+func manifestToMapFromPlugin(p *pg.Plugin) map[string]any {
+	return p.Manifest
 }
 
 // DisablePlugin disables a plugin
@@ -303,7 +322,7 @@ func (s *Service) DisablePlugin(ctx context.Context, id uuid.UUID) error {
 	logger.Info("Disabling plugin", "plugin_id", id.String())
 
 	// Update status in DB
-	if err := s.pluginRepo.UpdateStatus(ctx, id, pg.PluginStatusError, "", "Disabled"); err != nil {
+	if err := s.pluginRepo.UpdateStatus(ctx, id, pg.PluginStatusStopped, "", ""); err != nil {
 		return err
 	}
 
@@ -332,8 +351,81 @@ func (s *Service) RebuildPlugin(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 
-	// Start async rebuild
-	go s.buildPlugin(ctx, id, plugin.GitURL, plugin.GitBranch)
+	// Start async rebuild (use background context to avoid cancellation)
+	go s.buildPlugin(context.Background(), id, plugin.GitURL, plugin.GitBranch)
+
+	return nil
+}
+
+// StartAllPlugins loads and starts all plugins from the database
+func (s *Service) StartAllPlugins(ctx context.Context) error {
+	logger.Info("Starting all plugins from database...")
+
+	// Get all plugins that are not in pending or building state
+	plugins, err := s.pluginRepo.List(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to list plugins: %w", err)
+	}
+
+	startedCount := 0
+	skippedCount := 0
+	errorCount := 0
+
+	for _, plugin := range plugins {
+		// Skip plugins without eBPF artifacts
+		if plugin.EBPFS3Key == "" {
+			logger.Debug("Skipping plugin (no eBPF artifacts)",
+				"plugin_id", plugin.ID.String(),
+				"name", plugin.Name,
+				"status", plugin.Status)
+			skippedCount++
+			continue
+		}
+
+		// Skip plugins in pending or building state
+		if plugin.Status == string(pg.PluginStatusPending) || plugin.Status == string(pg.PluginStatusBuilding) {
+			logger.Debug("Skipping plugin (still building)",
+				"plugin_id", plugin.ID.String(),
+				"name", plugin.Name,
+				"status", plugin.Status)
+			skippedCount++
+			continue
+		}
+
+		logger.Info("Starting plugin",
+			"plugin_id", plugin.ID.String(),
+			"name", plugin.Name,
+			"version", plugin.Version,
+			"status", plugin.Status)
+
+		// Start plugin runtime
+		if err := s.runtime.StartPlugin(ctx, plugin.ID, plugin.Name, plugin.Version, plugin.EBPFS3Key, manifestToMapFromPlugin(plugin)); err != nil {
+			logger.Error("Failed to start plugin runtime",
+				"plugin_id", plugin.ID.String(),
+				"name", plugin.Name,
+				"error", err.Error())
+			errorCount++
+			continue
+		}
+
+		// Update DB status to ready after successful start
+		if err := s.pluginRepo.UpdateStatus(ctx, plugin.ID, pg.PluginStatusReady, "", ""); err != nil {
+			logger.Error("Failed to update plugin status in DB",
+				"plugin_id", plugin.ID.String(),
+				"error", err.Error())
+		}
+
+		startedCount++
+		logger.Info("✅ Plugin started",
+			"plugin_id", plugin.ID.String(),
+			"name", plugin.Name)
+	}
+
+	logger.Info("Plugin startup complete",
+		"total", len(plugins),
+		"started", startedCount,
+		"skipped", skippedCount,
+		"errors", errorCount)
 
 	return nil
 }
@@ -356,7 +448,12 @@ func manifestToMap(m *Manifest) map[string]any {
 		"description": m.Description,
 		"author":      m.Author,
 	}
-	
+
+	fmt.Printf("DEBUG manifestToMap: name=%s, metrics count=%d\n", m.Name, len(m.Metrics))
+	for i, metric := range m.Metrics {
+		fmt.Printf("DEBUG manifestToMap: metric[%d]=%s type=%s\n", i, metric.Name, metric.Type)
+	}
+
 	// Convert ebpf config
 	if m.EBPF.Entry != "" {
 		ebpfMap := map[string]any{
@@ -375,7 +472,25 @@ func manifestToMap(m *Manifest) map[string]any {
 		}
 		result["ebpf"] = ebpfMap
 	}
-	
+
+	// Convert events
+	fmt.Printf("DEBUG manifestToMap: events count=%d\n", len(m.Events))
+	if len(m.Events) > 0 {
+		events := make([]map[string]any, len(m.Events))
+		for i, e := range m.Events {
+			events[i] = map[string]any{
+				"type":   e.Type,
+				"name":   e.Name,
+				"metric": e.Metric,
+			}
+			fmt.Printf("DEBUG manifestToMap: event[%d] type=%d name=%s metric=%s\n", i, e.Type, e.Name, e.Metric)
+		}
+		result["events"] = events
+		fmt.Printf("DEBUG manifestToMap: added %d events to result\n", len(events))
+	} else {
+		fmt.Printf("DEBUG manifestToMap: NO events (m.Events is empty)\n")
+	}
+
 	// Convert wasm config
 	if m.WASM.Entry != "" {
 		result["wasm"] = map[string]any{
@@ -383,7 +498,7 @@ func manifestToMap(m *Manifest) map[string]any {
 			"sdk_version": m.WASM.SDKVersion,
 		}
 	}
-	
+
 	// Convert metrics
 	if len(m.Metrics) > 0 {
 		metrics := make([]map[string]any, len(m.Metrics))
@@ -407,8 +522,11 @@ func manifestToMap(m *Manifest) map[string]any {
 			metrics[i] = metricMap
 		}
 		result["metrics"] = metrics
+		fmt.Printf("DEBUG manifestToMap: added %d metrics to result\n", len(metrics))
+	} else {
+		fmt.Printf("DEBUG manifestToMap: NO metrics to add (m.Metrics is empty)\n")
 	}
-	
+
 	// Convert filters
 	if len(m.Filters) > 0 {
 		filters := make([]map[string]any, len(m.Filters))
@@ -421,7 +539,7 @@ func manifestToMap(m *Manifest) map[string]any {
 		}
 		result["filters"] = filters
 	}
-	
+
 	return result
 }
 

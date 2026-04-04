@@ -90,6 +90,7 @@ export function PluginsPage() {
       ready: 'success',
       building: 'default',
       pending: 'warning',
+      stopped: 'warning',
       error: 'destructive',
     }
     return <Badge variant={variants[status] || 'default'}>{status}</Badge>
@@ -217,7 +218,7 @@ export function PluginsPage() {
                             </Button>
                           </>
                         )}
-                        {plugin.status !== 'ready' && plugin.status !== 'building' && (
+                        {(plugin.status === 'stopped' || plugin.status === 'error') && (
                           <Button
                             variant="outline"
                             size="icon"

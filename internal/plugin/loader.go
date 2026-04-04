@@ -107,7 +107,11 @@ func (l *Loader) Load(ctx context.Context, cfg LoadConfig) (*LoadResult, error) 
 	// Verify required files exist
 	requiredFiles := []string{
 		filepath.Join(pluginDir, manifest.EBPF.Entry),
-		filepath.Join(pluginDir, manifest.WASM.Entry),
+	}
+
+	// WASM is optional now
+	if manifest.WASM.Entry != "" {
+		requiredFiles = append(requiredFiles, filepath.Join(pluginDir, manifest.WASM.Entry))
 	}
 
 	for _, file := range requiredFiles {

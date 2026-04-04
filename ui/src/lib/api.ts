@@ -1,4 +1,40 @@
 const API_BASE = '/api/v1'
+const PROMETHEUS_URL = import.meta.env.VITE_PROMETHEUS_URL || 'http://localhost:9090'
+
+// Prometheus API client
+const prometheus = {
+  async query(promql: string): Promise<PrometheusQueryResult[]> {
+    const res = await fetch(`${PROMETHEUS_URL}/api/v1/query?query=${encodeURIComponent(promql)}`)
+    const data = await res.json()
+    return data.data?.result || []
+  },
+
+  async queryRange(promql: string, start: number, end: number, step: string): Promise<PrometheusQueryResult[]> {
+    const res = await fetch(
+      `${PROMETHEUS_URL}/api/v1/query_range?query=${encodeURIComponent(promql)}&start=${start}&end=${end}&step=${step}`
+    )
+    const data = await res.json()
+    return data.data?.result || []
+  },
+
+  async getMetricNames(): Promise<string[]> {
+    const res = await fetch(`${PROMETHEUS_URL}/api/v1/label/__name__/values`)
+    const data = await res.json()
+    return data.data || []
+  },
+
+  async getLabelValues(label: string): Promise<string[]> {
+    const res = await fetch(`${PROMETHEUS_URL}/api/v1/label/${label}/values`)
+    const data = await res.json()
+    return data.data || []
+  },
+}
+
+export interface PrometheusQueryResult {
+  metric: Record<string, string>
+  value: [number, string]
+  values?: [number, string][]
+}
 
 export interface Plugin {
   id: string
@@ -12,7 +48,7 @@ export interface Plugin {
   ebpf_s3_key?: string
   wasm_s3_key?: string
   manifest: Record<string, unknown>
-  status: 'pending' | 'building' | 'ready' | 'error'
+  status: 'pending' | 'building' | 'ready' | 'stopped' | 'error'
   build_log?: string
   error_message?: string
   created_at: string
@@ -308,3 +344,6 @@ export class WebSocketClient {
 }
 
 export const wsClient = new WebSocketClient()
+
+// Export both api and prometheus
+export { prometheus }

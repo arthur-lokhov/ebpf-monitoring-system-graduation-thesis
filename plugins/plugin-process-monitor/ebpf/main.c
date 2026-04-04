@@ -1,50 +1,31 @@
 // eBPF program for process monitoring
-// Tracks process lifecycle, CPU time, and context switches
+// Uses syscall tracepoints (compatible with WSL2)
 
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
-// Process event structure
+// Event structure - MUST match Go EBPFEvent in loader.go
 struct process_event {
     __u64 timestamp;
     __u32 pid;
-    __u32 ppid;
-    __u32 exit_code;
-    __u64 duration_ns;
     char comm[16];
-    char parent_comm[16];
-    char type;  // 1=fork, 2=exit, 3=sched_switch
+    char type;  // 1=exec, 2=exit
 };
 
 // Ring buffer for events
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 512 * 1024);
+    __uint(max_entries, 256 * 1024);
 } process_events SEC(".maps");
 
-// Track process start times for duration calculation
+// Track active processes for gauge
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 4096);
     __type(key, __u32);  // pid
     __type(value, __u64); // start timestamp
-} process_start SEC(".maps");
-
-// Process statistics
-struct process_stats {
-    __u64 start_count;
-    __u64 exit_count;
-    __u64 total_cpu_time_ns;
-    __u64 total_duration_ns;
-};
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1024);
-    __type(key, char[16]);  // comm
-    __type(value, struct process_stats);
-} process_stats_map SEC(".maps");
+} active_processes SEC(".maps");
 
 // Submit event to ring buffer
 static __always_inline void submit_event(struct process_event *e) {
@@ -56,53 +37,30 @@ static __always_inline void submit_event(struct process_event *e) {
     }
 }
 
-// Update process stats
-static __always_inline void update_process_stats(const char* comm, bool is_start, __u64 duration, __u64 cpu_time) {
-    struct process_stats *stats = bpf_map_lookup_elem(&process_stats_map, comm);
-    if (!stats) {
-        struct process_stats new_stats = {};
-        bpf_map_update_elem(&process_stats_map, comm, &new_stats, BPF_ANY);
-        stats = bpf_map_lookup_elem(&process_stats_map, comm);
-        if (!stats) return;
-    }
-
-    if (is_start) {
-        stats->start_count++;
-    } else {
-        stats->exit_count++;
-        stats->total_duration_ns += duration;
-        stats->total_cpu_time_ns += cpu_time;
-    }
-}
-
-// Trace process fork
-SEC("tracepoint/sched/sched_process_fork")
-int trace_sched_process_fork(struct bpf_tracepoint *ctx) {
+// Trace execve (process start)
+SEC("tracepoint/syscalls/sys_enter_execve")
+int trace_process_exec(struct bpf_tracepoint *ctx) {
     struct process_event e = {};
 
     e.timestamp = bpf_ktime_get_ns();
-    e.type = 1;  // fork
+    e.type = 1;  // exec
 
-    // Extract parent and child info from tracepoint
-    // Simplified - real implementation would access tracepoint fields
-    e.ppid = bpf_get_current_pid_tgid() >> 32;
-    e.pid = 0;  // Would extract from tracepoint
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    e.pid = pid_tgid >> 32;
 
     bpf_get_current_comm(&e.comm, sizeof(e.comm));
 
-    // Track start time
-    bpf_map_update_elem(&process_start, &e.pid, &e.timestamp, BPF_ANY);
-
-    // Update stats
-    update_process_stats(e.comm, true, 0, 0);
+    // Track active process
+    __u64 ts = e.timestamp;
+    bpf_map_update_elem(&active_processes, &e.pid, &ts, BPF_ANY);
 
     submit_event(&e);
     return 0;
 }
 
-// Trace process exit
-SEC("tracepoint/sched/sched_process_exit")
-int trace_sched_process_exit(struct bpf_tracepoint *ctx) {
+// Trace kill (process exit)
+SEC("tracepoint/syscalls/sys_enter_kill")
+int trace_process_exit(struct bpf_tracepoint *ctx) {
     struct process_event e = {};
 
     e.timestamp = bpf_ktime_get_ns();
@@ -113,47 +71,10 @@ int trace_sched_process_exit(struct bpf_tracepoint *ctx) {
 
     bpf_get_current_comm(&e.comm, sizeof(e.comm));
 
-    // Get start time and calculate duration
-    __u64 *start_time = bpf_map_lookup_elem(&process_start, &pid);
-    if (start_time) {
-        e.duration_ns = e.timestamp - *start_time;
-        bpf_map_delete_elem(&process_start, &pid);
-    }
-
-    // Exit code would be extracted from tracepoint
-    e.exit_code = 0;
-
-    // Update stats
-    update_process_stats(e.comm, false, e.duration_ns, 0);
+    // Remove from active processes
+    bpf_map_delete_elem(&active_processes, &pid);
 
     submit_event(&e);
-    return 0;
-}
-
-// Trace context switch
-SEC("tracepoint/sched/sched_switch")
-int trace_sched_switch(struct bpf_tracepoint *ctx) {
-    struct process_event e = {};
-
-    e.timestamp = bpf_ktime_get_ns();
-    e.type = 3;  // sched_switch
-
-    // Extract prev and next task info
-    // Simplified - real implementation would access tracepoint fields
-    e.pid = bpf_get_current_pid_tgid() >> 32;
-
-    bpf_get_current_comm(&e.comm, sizeof(e.comm));
-
-    submit_event(&e);
-    return 0;
-}
-
-// Count active processes
-SEC("tracepoint/sched/sched_process_free")
-int trace_sched_process_free(struct bpf_tracepoint *ctx) {
-    // Clean up any remaining entries
-    __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    bpf_map_delete_elem(&process_start, &pid);
     return 0;
 }
 

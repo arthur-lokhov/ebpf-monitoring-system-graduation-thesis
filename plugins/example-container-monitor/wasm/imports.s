@@ -1,0 +1,12 @@
+.section .import.env.epbf_log,"",@
+.byte 0x00
+.section .import.env.epbf_now_ns,"",@
+.byte 0x00
+.section .import.env.epbf_emit_counter,"",@
+.byte 0x00
+.section .import.env.epbf_emit_gauge,"",@
+.byte 0x00
+.section .import.env.epbf_subscribe_map,"",@
+.byte 0x00
+.section .import.env.epbf_read_map,"",@
+.byte 0x00

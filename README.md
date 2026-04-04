@@ -144,10 +144,29 @@ epbf-monitor:
 docker-compose restart epbf-monitor
 ```
 
-8. **Запустите сервер** (если не используете docker-compose)
+8. **Запустите сервер**
+
+Приложение автоматически загружает переменные окружения из `deployments/.env`:
 
 ```bash
-make run
+# Простой запуск (автозагрузка deployments/.env)
+make run-dev
+
+# Или напрямую
+go run ./cmd/epbf-monitor
+```
+
+Приложение попытается загрузить `.env` файл из следующих мест (по порядку):
+- `.env` в текущей директории
+- `deployments/.env` 
+- `../deployments/.env`
+
+Вы также можете скопировать `deployments/.env.example` в корень проекта как `.env` и настроить под себя.
+
+**Запуск с Docker (рекомендуется):**
+
+```bash
+make docker-up
 ```
 
 9. **Проверьте работу**

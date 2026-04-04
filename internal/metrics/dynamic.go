@@ -36,16 +36,23 @@ func NewDynamicMetrics(registry *prometheus.Registry) *DynamicMetrics {
 func (d *DynamicMetrics) RegisterPluginMetrics(pluginName, version string, manifest map[string]any) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	
+
 	logger.Info("Registering plugin metrics",
 		"plugin", pluginName,
 		"version", version,
 		"manifest_keys", getMapKeys(manifest))
-	
+
+	// Unregister existing metrics for this plugin first (for rebuilds)
+	if _, exists := d.pluginMetrics[pluginName]; exists {
+		logger.Info("Unregistering existing plugin metrics before rebuild",
+			"plugin", pluginName)
+		d.unregisterPluginMetricsLocked(pluginName)
+	}
+
 	// Get metrics from manifest
 	metricsRaw, ok := manifest["metrics"]
 	if !ok {
-		logger.Warn("No 'metrics' key found in manifest", 
+		logger.Warn("No 'metrics' key found in manifest",
 			"plugin", pluginName,
 			"available_keys", getMapKeys(manifest))
 		return nil
@@ -329,12 +336,17 @@ func (d *DynamicMetrics) GetGauge(pluginName, metricName string, labels map[stri
 func (d *DynamicMetrics) UnregisterPluginMetrics(pluginName string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	
+
+	return d.unregisterPluginMetricsLocked(pluginName)
+}
+
+// unregisterPluginMetricsLocked unregisters metrics (must hold lock)
+func (d *DynamicMetrics) unregisterPluginMetricsLocked(pluginName string) error {
 	pm, ok := d.pluginMetrics[pluginName]
 	if !ok {
 		return nil // Already unregistered
 	}
-	
+
 	count := 0
 	for name, collector := range pm.Collectors {
 		if d.registry.Unregister(collector) {
@@ -344,13 +356,13 @@ func (d *DynamicMetrics) UnregisterPluginMetrics(pluginName string) error {
 				"name", name)
 		}
 	}
-	
+
 	delete(d.pluginMetrics, pluginName)
-	
+
 	logger.Info("✅ Plugin metrics unregistered",
 		"plugin", pluginName,
 		"count", count)
-	
+
 	return nil
 }
 

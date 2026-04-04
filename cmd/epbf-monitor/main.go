@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/epbf-monitoring/epbf-monitor/internal/api"
 	"github.com/epbf-monitoring/epbf-monitor/internal/filter"
 	"github.com/epbf-monitoring/epbf-monitor/internal/logger"
@@ -31,6 +33,9 @@ func main() {
 	defer logger.Sync()
 
 	logger.Info("🚀 Starting epbf-monitoring...", "version", "0.1.0")
+
+	// Load .env file
+	loadEnvFile()
 
 	// Create context that cancels on SIGINT/SIGTERM
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -174,6 +179,7 @@ func main() {
 			pluginRepo,
 			pluginStorage,
 			metricsCollector,
+			filterEngine,
 			plugin.Config{
 				BuildDir:     buildDir,
 				BuilderImage: builderImage,
@@ -184,6 +190,11 @@ func main() {
 			logger.Error("⚠️  Plugin service initialization failed", "error", err.Error())
 		} else {
 			logger.Info("✅ Plugin service initialized")
+
+			// Start all plugins from database
+			if err := pluginService.StartAllPlugins(ctx); err != nil {
+				logger.Warn("⚠️  Failed to start some plugins", "error", err.Error())
+			}
 		}
 	} else {
 		logger.Warn("⚠️  Plugin service not initialized - missing dependencies",
@@ -255,4 +266,37 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// loadEnvFile loads environment variables from .env files
+// It tries multiple locations in order:
+// 1. .env in current directory
+// 2. deployments/.env relative to current directory
+// 3. ../deployments/.env (when running from cmd/epbf-monitor)
+func loadEnvFile() {
+	// Try multiple possible locations
+	envPaths := []string{
+		".env",
+		"deployments/.env",
+		"../deployments/.env",
+	}
+
+	loaded := false
+	for _, envPath := range envPaths {
+		// Convert to absolute path for better logging
+		absPath, err := filepath.Abs(envPath)
+		if err != nil {
+			absPath = envPath
+		}
+
+		if err := godotenv.Load(envPath); err == nil {
+			logger.Info("✅ Loaded environment variables", "file", absPath)
+			loaded = true
+			break
+		}
+	}
+
+	if !loaded {
+		logger.Debug("No .env file found, using system environment variables")
+	}
 }

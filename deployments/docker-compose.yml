@@ -1,6 +1,41 @@
 version: "3.8"
 
 services:
+  # Frontend UI (React + Vite)
+  ui:
+    build:
+      context: ..
+      dockerfile: deployments/docker/ui.Dockerfile
+    container_name: epbf-ui
+    ports:
+      - "${UI_PORT:-3000}:3000"
+    environment:
+      VITE_API_URL: http://localhost:${MONITOR_PORT:-8080}
+    restart: ${RESTART_POLICY:-unless-stopped}
+    networks:
+      - epbf-network
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:v2.50.1
+    container_name: epbf-prometheus
+    network_mode: "host"
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    restart: ${RESTART_POLICY:-unless-stopped}
+    networks:
+      - epbf-network
+
   # PostgreSQL for metadata storage
   postgres:
     image: postgres:15-alpine
@@ -42,62 +77,15 @@ services:
       timeout: ${GARAGE_HEALTH_TIMEOUT:-5s}
       retries: ${GARAGE_HEALTH_RETRIES:-3}
 
-  # epbf-monitoring server
-  epbf-monitor:
-    build:
-      context: ..
-      dockerfile: deployments/docker/runtime.Dockerfile
-      args:
-        GO_VERSION: ${GO_VERSION:-1.25}
-        CLANG_VERSION: ${CLANG_VERSION:-14}
-    container_name: epbf-monitor-server
-    ports:
-      - "${MONITOR_PORT:-8080}:8080"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    privileged: ${PRIVILEGED_MODE:-true}
-    cap_add:
-      - SYS_ADMIN
-      - BPF
-      - PERFMON
-      - IPC_LOCK
-    ulimits:
-      memlock: ${MEMLOCK_LIMIT:--1}
-    environment:
-      # Database configuration
-      DB_HOST: ${POSTGRES_HOST:-postgres}
-      DB_PORT: ${POSTGRES_PORT:-5432}
-      DB_USER: ${POSTGRES_USER:-epbf}
-      DB_PASSWORD: ${POSTGRES_PASSWORD:-epbf_password}
-      DB_NAME: ${POSTGRES_DB:-epbf}
-      
-      # S3 configuration
-      S3_ENDPOINT: http://${GARAGE_HOST:-host.docker.internal}:${GARAGE_PORT:-3900}
-      S3_REGION: ${GARAGE_REGION:-garage}
-      S3_BUCKET: ${GARAGE_BUCKET:-epbf-plugins}
-      S3_ACCESS_KEY: ${GARAGE_ADMIN_TOKEN:-GKfa5b35bb8a522ebb83c006b8}
-      S3_SECRET_KEY: ${GARAGE_SECRET_KEY:-921529f4512a60d4f2e947a149f5289fb3ade82c1c10f0761397f80b328d682f}
-      
-      # Build configuration
-      ENABLE_DOCKER: ${ENABLE_DOCKER:-true}
-      BUILD_DIR: ${BUILD_DIR:-/tmp/epbf-builds}
-      BUILDER_IMAGE: ${BUILDER_IMAGE:-epbf-monitor-builder:latest}
-      
-      # Logging
-      LOG_LEVEL: ${MONITOR_LOG_LEVEL:-info}
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ${BUILD_DIR:-/tmp/epbf-builds}:/tmp/epbf-builds
-      - ${PLUGINS_PATH:-../plugins}:/workspace/plugins
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: ${RESTART_POLICY:-unless-stopped}
-    networks:
-      - epbf-network
+  # epbf-monitoring server (run on host for eBPF access)
+  # epbf-monitor:
+  #   Run locally: go run ./cmd/epbf-monitor
+  #   Required env vars: DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, S3_ENDPOINT, etc.
+  #   See .env.example for full configuration
 
 volumes:
   postgres_data:
+  prometheus_data:
 
 networks:
   epbf-network:

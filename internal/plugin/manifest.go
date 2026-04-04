@@ -20,6 +20,9 @@ type Manifest struct {
 	// eBPF configuration
 	EBPF EBPFConfig `yaml:"ebpf"`
 
+	// Event definitions
+	Events []EventDef `yaml:"events,omitempty"`
+
 	// WASM configuration
 	WASM WASMConfig `yaml:"wasm"`
 
@@ -41,6 +44,13 @@ type EBPFProgram struct {
 	Name   string `yaml:"name"`
 	Type   string `yaml:"type"` // kprobe, tracepoint, uprobe, etc.
 	Attach string `yaml:"attach"`
+}
+
+// EventDef represents an event definition
+type EventDef struct {
+	Type   int    `yaml:"type"`
+	Name   string `yaml:"name"`
+	Metric string `yaml:"metric"`
 }
 
 // WASMConfig holds WASM module configuration
@@ -116,9 +126,9 @@ func (m *Manifest) Validate() error {
 		}
 	}
 
-	// WASM validation
-	if m.WASM.Entry == "" {
-		return fmt.Errorf("wasm.entry is required")
+	// WASM validation (optional)
+	if m.WASM.Entry != "" {
+		// WASM is configured, validate if present
 	}
 
 	// Metrics validation

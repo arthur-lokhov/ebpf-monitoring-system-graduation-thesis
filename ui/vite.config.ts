@@ -21,4 +21,7 @@ export default defineConfig({
       '/health': 'http://localhost:8080',
     },
   },
+  define: {
+    'import.meta.env.VITE_PROMETHEUS_URL': JSON.stringify(process.env.VITE_PROMETHEUS_URL || 'http://localhost:9090'),
+  },
 })

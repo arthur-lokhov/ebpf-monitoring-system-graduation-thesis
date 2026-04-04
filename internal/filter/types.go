@@ -69,14 +69,24 @@ func (m *MetricStore) AddMetric(metric *MetricValue) {
 		m.metrics[metric.Name][labelHash] = &MetricSeries{
 			Name:   metric.Name,
 			Labels: metric.Labels,
-			Points: make([]MetricPoint, 0),
+			Points: make([]MetricPoint, 0, 1), // Pre-allocate for 1 point
 		}
 	}
 
-	m.metrics[metric.Name][labelHash].Points = append(m.metrics[metric.Name][labelHash].Points, MetricPoint{
-		Value:     metric.Value,
-		Timestamp: metric.Timestamp,
-	})
+	series := m.metrics[metric.Name][labelHash]
+	
+	// Keep only the latest point (replace instead of append)
+	if len(series.Points) > 0 {
+		series.Points[0] = MetricPoint{
+			Value:     metric.Value,
+			Timestamp: metric.Timestamp,
+		}
+	} else {
+		series.Points = append(series.Points, MetricPoint{
+			Value:     metric.Value,
+			Timestamp: metric.Timestamp,
+		})
+	}
 }
 
 // GetMetrics retrieves metrics by name
@@ -96,12 +106,14 @@ func (m *MetricStore) GetAllMetrics() []*MetricValue {
 	var result []*MetricValue
 	for name, labelMap := range m.metrics {
 		for _, series := range labelMap {
-			for _, point := range series.Points {
+			// Return only the latest point for each series
+			if len(series.Points) > 0 {
+				latest := series.Points[len(series.Points)-1]
 				result = append(result, &MetricValue{
 					Name:      name,
-					Value:     point.Value,
+					Value:     latest.Value,
 					Labels:    series.Labels,
-					Timestamp: point.Timestamp,
+					Timestamp: latest.Timestamp,
 				})
 			}
 		}

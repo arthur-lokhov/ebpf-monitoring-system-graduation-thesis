@@ -23,11 +23,10 @@ import (
 
 // BuildResult holds the result of a plugin build
 type BuildResult struct {
-	Success   bool
-	EBPFFile  string
-	WASMFile  string
-	BuildLog  string
-	Duration  time.Duration
+	Success  bool
+	EBPFFile string
+	BuildLog string
+	Duration time.Duration
 }
 
 // BuildError represents a build error with logs
@@ -104,30 +103,6 @@ elif [ -f ebpf/main.c ]; then
     echo "✅ eBPF: /tmp/epbf-build-output/program.o"
 else
     echo "❌ No eBPF source found"
-    exit 1
-fi
-
-# Build WASM
-echo "📦 Building WASM module..."
-if [ -f wasm/Makefile ]; then
-    make -C wasm
-    cp wasm/build/plugin.wasm /tmp/epbf-build-output/plugin.wasm
-elif [ -f wasm/main.c ]; then
-    clang -O2 -g -Wall -Wextra \
-        --target=wasm32 \
-        -nostdlib \
-        -Wl,--no-entry \
-        -Wl,--export=epbf_init \
-        -Wl,--export=__data_end \
-        -Wl,--export=__heap_base \
-        -Wl,--strip-debug \
-        -Wl,--allow-undefined \
-        -I/workspace/plugin/../../pkg/wasmsdk/include \
-        wasm/main.c \
-        -o /tmp/epbf-build-output/plugin.wasm
-    echo "✅ WASM: /tmp/epbf-build-output/plugin.wasm"
-else
-    echo "❌ No WASM source found"
     exit 1
 fi
 
@@ -228,7 +203,6 @@ echo "✅ Build complete!"
 
 	// Copy artifacts from container using docker cp (avoids macOS bind mount issues)
 	ebpfFile := filepath.Join(outputDir, "program.o")
-	wasmFile := filepath.Join(outputDir, "plugin.wasm")
 
 	// Ensure output directory exists
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -246,20 +220,8 @@ echo "✅ Build complete!"
 		return result, &BuildError{error: fmt.Errorf("failed to write eBPF file: %w", err), BuildLog: logBuffer.String()}
 	}
 
-	// Copy WASM module
-	wasmData, err := copyFromContainer(ctx, b.dockerClient, resp.ID, "/tmp/epbf-build-output/plugin.wasm")
-	if err != nil {
-		result.Success = false
-		return result, &BuildError{error: fmt.Errorf("failed to copy WASM from container: %w", err), BuildLog: logBuffer.String()}
-	}
-	if err := os.WriteFile(wasmFile, wasmData, 0644); err != nil {
-		result.Success = false
-		return result, &BuildError{error: fmt.Errorf("failed to write WASM file: %w", err), BuildLog: logBuffer.String()}
-	}
-
 	result.Success = true
 	result.EBPFFile = ebpfFile
-	result.WASMFile = wasmFile
 
 	// Cleanup container
 	_ = b.dockerClient.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
@@ -281,7 +243,6 @@ func (b *Builder) BuildInPlace(ctx context.Context, pluginDir string) (*BuildRes
 	// For now, return placeholder
 	result.Success = true
 	result.EBPFFile = filepath.Join(buildDir, "program.o")
-	result.WASMFile = filepath.Join(buildDir, "plugin.wasm")
 	result.Duration = time.Since(startTime)
 	result.BuildLog = "Local build not yet implemented, using placeholder"
 

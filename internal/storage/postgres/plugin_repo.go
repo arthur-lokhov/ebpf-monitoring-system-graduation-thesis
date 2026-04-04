@@ -36,6 +36,7 @@ const (
 	PluginStatusPending  PluginStatus = "pending"
 	PluginStatusBuilding PluginStatus = "building"
 	PluginStatusReady    PluginStatus = "ready"
+	PluginStatusStopped  PluginStatus = "stopped"
 	PluginStatusError    PluginStatus = "error"
 )
 

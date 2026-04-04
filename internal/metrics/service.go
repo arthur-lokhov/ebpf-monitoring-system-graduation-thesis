@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -46,8 +47,10 @@ func (s *Service) GetMetrics(ctx context.Context, nameFilter, labelFilter string
 	defer s.mu.RUnlock()
 
 	allMetrics := s.filterEngine.GetMetrics()
-	result := make([]*MetricSample, 0)
-
+	
+	// Keep only the latest value for each unique name+labels combination
+	latest := make(map[string]*MetricSample)
+	
 	for _, m := range allMetrics {
 		// Apply name filter
 		if nameFilter != "" && m.Name != nameFilter {
@@ -67,13 +70,28 @@ func (s *Service) GetMetrics(ctx context.Context, nameFilter, labelFilter string
 				continue
 			}
 		}
-
-		result = append(result, &MetricSample{
-			Name:      m.Name,
-			Value:     m.Value,
-			Labels:    m.Labels,
-			Timestamp: m.Timestamp,
-		})
+		
+		// Create unique key from name + sorted labels
+		key := m.Name
+		for k, v := range m.Labels {
+			key += fmt.Sprintf("|%s=%s", k, v)
+		}
+		
+		// Keep only the latest sample
+		if existing, ok := latest[key]; !ok || m.Timestamp.After(existing.Timestamp) {
+			latest[key] = &MetricSample{
+				Name:      m.Name,
+				Value:     m.Value,
+				Labels:    m.Labels,
+				Timestamp: m.Timestamp,
+			}
+		}
+	}
+	
+	// Convert map to slice
+	result := make([]*MetricSample, 0, len(latest))
+	for _, sample := range latest {
+		result = append(result, sample)
 	}
 
 	return result, nil

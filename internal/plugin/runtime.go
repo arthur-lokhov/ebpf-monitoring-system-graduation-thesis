@@ -4,23 +4,25 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
+	"github.com/epbf-monitoring/epbf-monitor/internal/filter"
 	"github.com/epbf-monitoring/epbf-monitor/internal/logger"
 	"github.com/epbf-monitoring/epbf-monitor/internal/metrics"
 	"github.com/epbf-monitoring/epbf-monitor/internal/runtime/ebpf"
-	wasmruntime "github.com/epbf-monitoring/epbf-monitor/internal/runtime/wasm"
 	"github.com/epbf-monitoring/epbf-monitor/internal/storage/s3"
 	"github.com/google/uuid"
 )
 
-// Runtime manages plugin runtime (eBPF + WASM)
+// Runtime manages plugin runtime (eBPF only)
 type Runtime struct {
 	ebpfLoader     *ebpf.Loader
-	wasmRunner     *wasmruntime.Runner
 	s3Client       *s3.Client
 	metrics        *metrics.Collector
+	filterEngine   *filter.Engine
 	pluginRuntimes map[uuid.UUID]*PluginRuntime
+	mu             sync.RWMutex
 }
 
 // PluginRuntime holds runtime state for a plugin
@@ -34,7 +36,7 @@ type PluginRuntime struct {
 }
 
 // NewRuntime creates a new plugin runtime manager
-func NewRuntime(pluginStorage *s3.PluginStorage, metricsCollector *metrics.Collector) (*Runtime, error) {
+func NewRuntime(pluginStorage *s3.PluginStorage, metricsCollector *metrics.Collector, filterEngine *filter.Engine) (*Runtime, error) {
 	logger.Info("Creating plugin runtime manager...")
 
 	// Create eBPF loader
@@ -42,10 +44,6 @@ func NewRuntime(pluginStorage *s3.PluginStorage, metricsCollector *metrics.Colle
 	if err != nil {
 		return nil, fmt.Errorf("failed to create eBPF loader: %w", err)
 	}
-
-	// Create WASM engine and runner
-	wasmEngine := wasmruntime.NewEngine()
-	wasmRunner := wasmruntime.NewRunner(wasmEngine, "/tmp/epbf-builds")
 
 	// Get S3 client from PluginStorage
 	var s3Client *s3.Client
@@ -57,21 +55,20 @@ func NewRuntime(pluginStorage *s3.PluginStorage, metricsCollector *metrics.Colle
 
 	return &Runtime{
 		ebpfLoader:     ebpfLoader,
-		wasmRunner:     wasmRunner,
 		s3Client:       s3Client,
 		metrics:        metricsCollector,
+		filterEngine:   filterEngine,
 		pluginRuntimes: make(map[uuid.UUID]*PluginRuntime),
 	}, nil
 }
 
-// StartPlugin starts a plugin's eBPF and WASM components
-func (r *Runtime) StartPlugin(ctx context.Context, pluginID uuid.UUID, name, version, ebpfS3Key, wasmS3Key string, manifest map[string]any) error {
+// StartPlugin starts a plugin's eBPF component
+func (r *Runtime) StartPlugin(ctx context.Context, pluginID uuid.UUID, name, version, ebpfS3Key string, manifest map[string]any) error {
 	logger.Info("Starting plugin runtime",
 		"plugin_id", pluginID.String(),
 		"name", name,
 		"version", version,
-		"ebpf_key", ebpfS3Key,
-		"wasm_key", wasmS3Key)
+		"ebpf_key", ebpfS3Key)
 
 	// Register dynamic metrics from manifest
 	if manifest != nil {
@@ -93,15 +90,117 @@ func (r *Runtime) StartPlugin(ctx context.Context, pluginID uuid.UUID, name, ver
 				"key", ebpfS3Key,
 				"error", err.Error())
 		} else {
-			ebpfProgram, err = r.ebpfLoader.LoadProgram(ctx, pluginID, name, ebpfBytes, func(event ebpf.ContainerEvent) {
-				// Handle eBPF event
-				logger.Debug("eBPF event received",
-					"plugin_id", pluginID.String(),
-					"type", event.Type,
-					"pid", event.PID,
-					"comm", string(event.Comm[:]))
+			// Extract ebpf programs info from manifest for correct tracepoint mapping
+			var ebpfPrograms []struct{ Name, Attach string }
+			if manifest != nil {
+				logger.Info("DEBUG: manifest is not nil", "keys", getMapKeys(manifest))
+				if ebpf, ok := manifest["ebpf"].(map[string]any); ok {
+					logger.Info("DEBUG: ebpf section found", "ebpf_keys", getMapKeys(ebpf))
+					programsRaw, exists := ebpf["programs"]
+					if !exists {
+						logger.Warn("DEBUG: programs key missing")
+					} else {
+						// Try both []any and []map[string]any
+						var programs []map[string]any
+						if p1, ok := programsRaw.([]any); ok {
+							for _, item := range p1 {
+								if m, ok := item.(map[string]any); ok {
+									programs = append(programs, m)
+								}
+							}
+						} else if p2, ok := programsRaw.([]map[string]any); ok {
+							programs = p2
+						} else {
+							logger.Warn("DEBUG: programs unknown type", "type", fmt.Sprintf("%T", programsRaw))
+						}
 
-				r.metrics.EBPFEventReceived(name, fmt.Sprintf("type_%d", event.Type))
+						for _, p := range programs {
+							name, _ := p["name"].(string)
+							attach, _ := p["attach"].(string)
+							logger.Info("DEBUG: program", "name", name, "attach", attach)
+							ebpfPrograms = append(ebpfPrograms, struct{ Name, Attach string }{name, attach})
+						}
+					}
+				}
+			} else {
+				logger.Warn("DEBUG: manifest is nil")
+			}
+			logger.Info("DEBUG: extracted ebpfPrograms", "count", len(ebpfPrograms))
+
+			// Extract event mapping from manifest
+			eventMetrics := make(map[uint8]string)
+			eventNames := make(map[uint8]string)
+			if manifest != nil {
+				eventsRaw, hasEvents := manifest["events"]
+				if hasEvents {
+					var events []map[string]any
+					if e1, ok := eventsRaw.([]any); ok {
+						for _, item := range e1 {
+							if m, ok := item.(map[string]any); ok {
+								events = append(events, m)
+							}
+						}
+					} else if e2, ok := eventsRaw.([]map[string]any); ok {
+						events = e2
+					}
+
+					for _, e := range events {
+						var eventTypeNum uint8
+						if ft, ok := e["type"].(float64); ok {
+							eventTypeNum = uint8(ft)
+						} else if it, ok := e["type"].(int); ok {
+							eventTypeNum = uint8(it)
+						} else {
+							continue
+						}
+						metricName, _ := e["metric"].(string)
+						eventName, _ := e["name"].(string)
+						if metricName != "" {
+							eventMetrics[eventTypeNum] = metricName
+						}
+						if eventName != "" {
+							eventNames[eventTypeNum] = eventName
+						}
+					}
+				}
+			}
+
+			ebpfProgram, err = r.ebpfLoader.LoadProgramWithManifest(ctx, pluginID, name, ebpfBytes, ebpfPrograms, func(event ebpf.EBPFEvent) {
+				// Handle eBPF event - lookup metric name from manifest event mapping
+				eventType := "unknown"
+				metricName := ""
+
+				if len(event.Data) > 0 {
+					eventTypeNum := event.Data[0]
+					// Lookup metric name from manifest
+					if mn, ok := eventMetrics[eventTypeNum]; ok {
+						metricName = mn
+					}
+					// Lookup event name from manifest
+					if en, ok := eventNames[eventTypeNum]; ok {
+						eventType = en
+					} else {
+						eventType = fmt.Sprintf("type_%d", eventTypeNum)
+					}
+				}
+
+				// logger.Info("eBPF event received",
+				// 	"plugin_id", pluginID.String(),
+				// 	"type", eventType,
+				// 	"pid", event.PID,
+				// 	"comm", string(event.Comm[:]))
+
+				// Emit metric to filter engine
+				if metricName != "" {
+					r.filterEngine.AddMetric(&filter.MetricValue{
+						Name:      metricName,
+						Value:     1,
+						Labels:    map[string]string{"plugin": name},
+						Timestamp: time.Now(),
+					})
+
+					r.metrics.EBPFEventReceived(name, eventType)
+				}
 			})
 			if err != nil {
 				logger.Error("Failed to load eBPF program",
@@ -116,30 +215,8 @@ func (r *Runtime) StartPlugin(ctx context.Context, pluginID uuid.UUID, name, ver
 		}
 	}
 
-	// Download and start WASM instance
-	if r.s3Client != nil && wasmS3Key != "" {
-		wasmBytes, err := r.downloadFromS3(ctx, wasmS3Key)
-		if err != nil {
-			logger.Error("Failed to download WASM module",
-				"plugin_id", pluginID.String(),
-				"key", wasmS3Key,
-				"error", err.Error())
-		} else {
-			err = r.wasmRunner.StartPlugin(ctx, pluginID, name, wasmBytes)
-			if err != nil {
-				logger.Error("Failed to start WASM plugin",
-					"plugin_id", pluginID.String(),
-					"error", err.Error())
-			} else {
-				logger.Info("✅ WASM plugin started",
-					"plugin_id", pluginID.String(),
-					"name", name)
-				r.metrics.WASMInstanceStarted(name)
-			}
-		}
-	}
-
 	// Store runtime state
+	r.mu.Lock()
 	r.pluginRuntimes[pluginID] = &PluginRuntime{
 		ID:          pluginID,
 		Name:        name,
@@ -148,13 +225,22 @@ func (r *Runtime) StartPlugin(ctx context.Context, pluginID uuid.UUID, name, ver
 		StartedAt:   time.Now(),
 		Enabled:     true,
 	}
+	r.mu.Unlock()
 
 	logger.Info("✅ Plugin runtime started",
 		"plugin_id", pluginID.String(),
-		"has_ebpf", ebpfProgram != nil,
-		"has_wasm", true)
+		"has_ebpf", ebpfProgram != nil)
 
 	return nil
+}
+
+// Helper function to get map keys
+func getMapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // downloadFromS3 downloads a file from S3
@@ -185,12 +271,6 @@ func (r *Runtime) StopPlugin(pluginID uuid.UUID) error {
 		"plugin_id", pluginID.String(),
 		"name", runtime.Name)
 
-	// Stop WASM
-	// if err := r.wasmRunner.StopPlugin(pluginID); err != nil { ... }
-
-	// Unload eBPF
-	// if runtime.EBPFProgram != nil { ... }
-
 	// Update state
 	runtime.Enabled = false
 
@@ -202,13 +282,16 @@ func (r *Runtime) StopPlugin(pluginID uuid.UUID) error {
 
 // EnablePlugin enables a stopped plugin
 func (r *Runtime) EnablePlugin(pluginID uuid.UUID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	runtime, ok := r.pluginRuntimes[pluginID]
 	if !ok {
 		return fmt.Errorf("plugin runtime not found: %s", pluginID.String())
 	}
 
 	if runtime.Enabled {
-		return fmt.Errorf("plugin is already enabled")
+		return nil // Already enabled, no-op
 	}
 
 	logger.Info("Enabling plugin",
@@ -216,10 +299,7 @@ func (r *Runtime) EnablePlugin(pluginID uuid.UUID) error {
 		"name", runtime.Name)
 
 	runtime.Enabled = true
-	r.metrics.WASMInstanceStarted(runtime.Name)
-	if runtime.EBPFProgram != nil {
-		r.metrics.EBPFProgramLoaded(runtime.Name)
-	}
+	r.metrics.EBPFProgramLoaded(runtime.Name)
 
 	logger.Info("✅ Plugin enabled",
 		"plugin_id", pluginID.String())
@@ -229,13 +309,16 @@ func (r *Runtime) EnablePlugin(pluginID uuid.UUID) error {
 
 // DisablePlugin disables a running plugin
 func (r *Runtime) DisablePlugin(pluginID uuid.UUID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	runtime, ok := r.pluginRuntimes[pluginID]
 	if !ok {
 		return fmt.Errorf("plugin runtime not found: %s", pluginID.String())
 	}
 
 	if !runtime.Enabled {
-		return fmt.Errorf("plugin is already disabled")
+		return nil // Already disabled, no-op
 	}
 
 	logger.Info("Disabling plugin",
@@ -243,10 +326,6 @@ func (r *Runtime) DisablePlugin(pluginID uuid.UUID) error {
 		"name", runtime.Name)
 
 	runtime.Enabled = false
-	r.metrics.WASMInstanceStopped(runtime.Name)
-	if runtime.EBPFProgram != nil {
-		r.metrics.EBPFProgramUnloaded(runtime.Name)
-	}
 
 	logger.Info("✅ Plugin disabled",
 		"plugin_id", pluginID.String())
@@ -320,11 +399,6 @@ func (r *Runtime) Close() error {
 	// Close eBPF loader
 	if err := r.ebpfLoader.Close(); err != nil {
 		logger.Error("Failed to close eBPF loader", "error", err.Error())
-	}
-
-	// Close WASM runner
-	if err := r.wasmRunner.Close(); err != nil {
-		logger.Error("Failed to close WASM runner", "error", err.Error())
 	}
 
 	logger.Info("✅ Plugin runtime manager closed")

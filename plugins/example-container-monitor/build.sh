@@ -32,29 +32,6 @@ clang -O2 -g -Wall -Wextra \
 echo "✅ eBPF: $BUILD_DIR/program.o"
 
 echo ""
-echo "📦 Building WASM module..."
-clang -O2 -g -Wall -Wextra \
-    --target=wasm32 \
-    -nostdlib \
-    -Wl,--no-entry \
-    -Wl,--export=epbf_init \
-    -Wl,--export=process_events \
-    -Wl,--export=epbf_cleanup \
-    -Wl,--export=test_simulate_start \
-    -Wl,--export=test_simulate_stop \
-    -Wl,--export=test_get_total_starts \
-    -Wl,--export=test_get_total_stops \
-    -Wl,--export=test_get_total_connections \
-    -Wl,--export=__data_end \
-    -Wl,--export=__heap_base \
-    -Wl,--strip-debug \
-    -Wl,--allow-undefined \
-    -I"$PLUGIN_DIR/../../pkg/wasmsdk/include" \
-    "$PLUGIN_DIR/wasm/main.c" \
-    -o "$BUILD_DIR/plugin.wasm"
-echo "✅ WASM: $BUILD_DIR/plugin.wasm"
-
-echo ""
 echo "📊 Build artifacts:"
 ls -lh "$BUILD_DIR/"
 
@@ -62,7 +39,7 @@ echo ""
 echo "✅ Build complete!"
 echo ""
 echo "To test locally:"
-echo "  1. Copy build/program.o and build/plugin.wasm to your epbf-monitoring instance"
+echo "  1. Copy build/program.o to your epbf-monitoring instance"
 echo "  2. Or use: curl -X POST http://localhost:8080/api/v1/plugins \\"
 echo "     -H 'Content-Type: application/json' \\"
 echo "     -d '{\"git_url\": \"file://$PLUGIN_DIR\"}'"

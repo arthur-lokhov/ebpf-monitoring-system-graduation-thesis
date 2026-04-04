@@ -24,6 +24,9 @@ USER builder
 
 WORKDIR /workspace
 
+# Copy pkg directory for WASM SDK
+COPY --chown=builder:builder pkg pkg
+
 # Default command
 ENTRYPOINT []
 CMD ["/bin/sh"]

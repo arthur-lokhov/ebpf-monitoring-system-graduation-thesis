@@ -592,7 +592,12 @@ func (h *Handlers) GetDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if dashboard == nil {
-		http.Error(w, "Dashboard not found", http.StatusNotFound)
+		// Return null instead of 404 so UI can create default
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"data":    nil,
+		})
 		return
 	}
 

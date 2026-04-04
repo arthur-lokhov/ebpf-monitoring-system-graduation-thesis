@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -15,14 +16,13 @@ import (
 	"github.com/google/uuid"
 )
 
-// ContainerEvent represents an event from eBPF
-type ContainerEvent struct {
+// EBPFEvent represents a generic event from eBPF
+type EBPFEvent struct {
 	Timestamp uint64
 	PID       uint32
 	PPID      uint32
 	Comm      [16]byte
-	Filename  [256]byte
-	Type      uint8
+	Data      []byte // Raw payload from eBPF
 }
 
 // Program represents a loaded eBPF program
@@ -34,7 +34,7 @@ type Program struct {
 	RingBuf      *ringbuf.Reader
 	ctx          context.Context
 	cancel       context.CancelFunc
-	eventHandler func(ContainerEvent)
+	eventHandler func(EBPFEvent)
 	mu           sync.RWMutex
 }
 
@@ -63,7 +63,12 @@ func NewLoader() (*Loader, error) {
 }
 
 // LoadProgram loads an eBPF program from bytes
-func (l *Loader) LoadProgram(ctx context.Context, pluginID uuid.UUID, name string, programBytes []byte, eventHandler func(ContainerEvent)) (*Program, error) {
+func (l *Loader) LoadProgram(ctx context.Context, pluginID uuid.UUID, name string, programBytes []byte, eventHandler func(EBPFEvent)) (*Program, error) {
+	return l.LoadProgramWithManifest(ctx, pluginID, name, programBytes, nil, eventHandler)
+}
+
+// LoadProgramWithManifest loads an eBPF program with manifest for correct tracepoint mapping
+func (l *Loader) LoadProgramWithManifest(ctx context.Context, pluginID uuid.UUID, name string, programBytes []byte, ebpfPrograms []struct{ Name, Attach string }, eventHandler func(EBPFEvent)) (*Program, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -114,10 +119,10 @@ func (l *Loader) LoadProgram(ctx context.Context, pluginID uuid.UUID, name strin
 	// Attach programs based on their type
 	links := make([]link.Link, 0)
 	for progName, prog := range collection.Programs {
-		logger.Debug("Attaching eBPF program", "name", progName, "type", prog.Type(), "plugin_id", pluginID.String())
+		logger.Info("Attaching eBPF program", "name", progName, "type", prog.Type(), "plugin_id", pluginID.String())
 
-		// Try to attach based on program type
-		attached, err := l.attachProgram(prog, progName)
+		// Try to attach based on manifest info first
+		attached, err := l.attachProgram(prog, progName, ebpfPrograms)
 		if err != nil {
 			logger.Warn("Failed to attach program",
 				"plugin_id", pluginID.String(),
@@ -129,6 +134,11 @@ func (l *Loader) LoadProgram(ctx context.Context, pluginID uuid.UUID, name strin
 			logger.Info("Attached eBPF program",
 				"plugin_id", pluginID.String(),
 				"name", progName)
+		} else {
+			logger.Warn("eBPF program not attached (no matching tracepoint/kprobe)",
+				"plugin_id", pluginID.String(),
+				"name", progName,
+				"type", prog.Type())
 		}
 	}
 
@@ -163,38 +173,71 @@ func (l *Loader) LoadProgram(ctx context.Context, pluginID uuid.UUID, name strin
 	return program, nil
 }
 
-// attachProgram attempts to attach an eBPF program based on its type
-func (l *Loader) attachProgram(prog *ebpf.Program, progName string) (link.Link, error) {
+// attachProgram attempts to attach an eBPF program based on manifest or program type
+func (l *Loader) attachProgram(prog *ebpf.Program, progName string, ebpfPrograms []struct{ Name, Attach string }) (link.Link, error) {
 	progType := prog.Type()
 
 	logger.Debug("Program info",
 		"name", progName,
 		"type", progType)
 
+	// Try to attach based on manifest first
+	if ebpfPrograms != nil {
+		for _, ep := range ebpfPrograms {
+			if ep.Name == progName && ep.Attach != "" {
+				// Check if it's a raw_tracepoint (no "/" in attach string)
+				if !strings.Contains(ep.Attach, "/") {
+					// Raw tracepoint - attach without group
+					lk, err := link.AttachRawTracepoint(link.RawTracepointOptions{
+						Name:    ep.Attach,
+						Program: prog,
+					})
+					if err == nil {
+						logger.Info("Attached raw tracepoint from manifest", "name", ep.Attach)
+						return lk, nil
+					}
+					logger.Warn("Failed to attach raw tracepoint from manifest",
+						"name", ep.Attach,
+						"error", err.Error())
+				} else {
+					// Regular tracepoint: parse attach string "group/name" → group=group, name=name
+					parts := strings.SplitN(ep.Attach, "/", 2)
+					if len(parts) == 2 {
+						lk, err := link.Tracepoint(parts[0], parts[1], prog, nil)
+						if err == nil {
+							logger.Info("Attached tracepoint from manifest", "group", parts[0], "name", parts[1])
+							return lk, nil
+						}
+						logger.Warn("Failed to attach tracepoint from manifest",
+							"group", parts[0],
+							"name", parts[1],
+							"error", err.Error())
+					}
+				}
+			}
+		}
+	}
+
 	// Try different attachment methods based on program type
 	switch progType {
 	case ebpf.TracePoint:
-		// Try to attach as tracepoint
-		// Common tracepoints for monitoring
-		tracepoints := []struct{ group, name string }{
-			{"syscalls", "sys_enter_open"},
+		// Fallback: try common tracepoints (manifest should have provided correct one)
+		fallbackTracepoints := []struct{ group, name string }{
 			{"syscalls", "sys_enter_openat"},
-			{"syscalls", "sys_enter_execve"},
-			{"syscalls", "sys_enter_connect"},
-			{"syscalls", "sys_enter_sendto"},
-			{"syscalls", "sys_enter_recvfrom"},
+			{"syscalls", "sys_enter_open"},
 			{"sched", "sched_process_fork"},
 			{"sched", "sched_process_exit"},
 		}
 
-		for _, tp := range tracepoints {
+		for _, tp := range fallbackTracepoints {
 			lk, err := link.Tracepoint(tp.group, tp.name, prog, nil)
 			if err == nil {
+				logger.Info("Attached fallback tracepoint", "group", tp.group, "name", tp.name)
 				return lk, nil
 			}
 		}
-		// If no specific tracepoint works, return without attachment
-		return nil, nil
+
+		return nil, fmt.Errorf("no suitable tracepoint found for program %s", progName)
 
 	case ebpf.Kprobe:
 		// Try common kprobes
@@ -263,9 +306,9 @@ func (p *Program) readEvents() {
 				continue
 			}
 
-			// Parse event
-			if len(record.RawSample) >= 320 { // Minimum size for ContainerEvent
-				event := parseContainerEvent(record.RawSample)
+			// Parse event - extract common header (timestamp + pid + ppid + comm)
+			if len(record.RawSample) >= 32 { // Minimum: 8 + 4 + 4 + 16
+				event := parseEBPFEvent(record.RawSample)
 
 				p.mu.RLock()
 				if p.eventHandler != nil {
@@ -277,16 +320,34 @@ func (p *Program) readEvents() {
 	}
 }
 
-// parseContainerEvent parses raw bytes into ContainerEvent
-func parseContainerEvent(data []byte) ContainerEvent {
-	var event ContainerEvent
+// parseEBPFEvent parses raw bytes from eBPF ringbuf
+// Expected eBPF structure:
+//   __u64 timestamp;    // 0-8
+//   __u32 pid;          // 8-12
+//   char comm[16];      // 12-28
+//   char type;          // 28
+func parseEBPFEvent(data []byte) EBPFEvent {
+	var event EBPFEvent
+
+	if len(data) < 29 {
+		logger.Debug("eBPF event too small", "size", len(data))
+		return event
+	}
 
 	event.Timestamp = binary.LittleEndian.Uint64(data[0:8])
 	event.PID = binary.LittleEndian.Uint32(data[8:12])
-	event.PPID = binary.LittleEndian.Uint32(data[12:16])
-	copy(event.Comm[:], data[16:32])
-	copy(event.Filename[:], data[32:288])
-	event.Type = data[288]
+	copy(event.Comm[:], data[12:28])
+
+	// type is at offset 28
+	eventType := data[28]
+	event.Data = []byte{eventType}
+
+	logger.Debug("Parsed eBPF event",
+		"timestamp", event.Timestamp,
+		"pid", event.PID,
+		"comm", string(event.Comm[:]),
+		"type", eventType,
+		"raw_size", len(data))
 
 	return event
 }

@@ -3,28 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-
-// ============================================================================
-// External functions provided by the host (Go runtime)
-// ============================================================================
-
-// Logging
-extern void epbf_log(int level, const char* msg, int len);
-
-// Time
-extern uint64_t epbf_now_ns(void);
-
-// Metric emission
-extern void epbf_emit_counter(const char* name, int name_len, uint64_t value,
-                               const char* labels, int labels_len);
-extern void epbf_emit_gauge(const char* name, int name_len, double value,
-                             const char* labels, int labels_len);
-
-// eBPF map access (stub for now)
-extern int epbf_subscribe_map(const char* name, int len);
-extern int epbf_read_map(const char* name, int name_len,
-                         const void* key, int key_size,
-                         void* value, int value_size);
+#include "../../pkg/wasmsdk/include/epbf_imports.h"
 
 // ============================================================================
 // Constants and Types
@@ -245,10 +224,10 @@ int epbf_init(void) {
         containers[i].start_time = 0;
         containers[i].event_count = 0;
     }
-    
+
     // Subscribe to eBPF map
     epbf_subscribe_map("container_events", 16);
-    
+
     log_info("Container monitor initialized");
     return 0;
 }
@@ -256,24 +235,8 @@ int epbf_init(void) {
 __attribute__((export))
 void process_events(void) {
     // In a real implementation, this would read from the eBPF ring buffer
-    // For now, we'll just process the event queue
-    
-    while (event_queue_head != event_queue_tail) {
-        struct container_event e = event_queue[event_queue_head];
-        event_queue_head = (event_queue_head + 1) % MAX_EVENT_QUEUE;
-        
-        switch (e.type) {
-            case EVENT_TYPE_START:
-                process_container_start(&e);
-                break;
-            case EVENT_TYPE_STOP:
-                process_container_stop(&e);
-                break;
-            case EVENT_TYPE_NETWORK:
-                process_network_connect(&e);
-                break;
-        }
-    }
+    // For demo, we emit test metrics on each call
+    demo_emit_metrics();
 }
 
 __attribute__((export))
@@ -282,63 +245,37 @@ void epbf_cleanup(void) {
 }
 
 // ============================================================================
-// Test/Debug Functions (for development)
+// Demo Mode - Generate test metrics without eBPF
 // ============================================================================
 
-// Simulate container start event
-__attribute__((export))
-void test_simulate_start(uint32_t pid, const char* comm) {
-    struct container_event e = {
-        .timestamp = epbf_now_ns(),
-        .pid = pid,
-        .type = EVENT_TYPE_START,
-    };
-    
-    for (int i = 0; i < 15 && comm[i]; i++) {
-        e.comm[i] = comm[i];
-    }
-    
-    int slot = (event_queue_tail + 1) % MAX_EVENT_QUEUE;
-    if (slot == event_queue_head) {
-        log_info("Event queue full");
-        return;
-    }
-    
-    event_queue[event_queue_tail] = e;
-    event_queue_tail = slot;
-}
+static uint64_t demo_counter = 0;
+static uint64_t demo_active = 0;
 
-// Simulate container stop event
-__attribute__((export))
-void test_simulate_stop(uint32_t pid) {
-    struct container_event e = {
-        .timestamp = epbf_now_ns(),
-        .pid = pid,
-        .type = EVENT_TYPE_STOP,
-    };
-    
-    int slot = (event_queue_tail + 1) % MAX_EVENT_QUEUE;
-    if (slot == event_queue_head) {
-        log_info("Event queue full");
-        return;
-    }
-    
-    event_queue[event_queue_tail] = e;
-    event_queue_tail = slot;
-}
-
-// Get stats
-__attribute__((export))
-uint64_t test_get_total_starts(void) {
-    return total_starts;
-}
+// Metric type constants - host will recognize these
+#define METRIC_STARTS     1
+#define METRIC_STOPS      2
+#define METRIC_NETWORK    3
+#define METRIC_ACTIVE     4
 
 __attribute__((export))
-uint64_t test_get_total_stops(void) {
-    return total_stops;
-}
+void demo_emit_metrics(void) {
+    demo_counter++;
+    demo_active = (demo_counter % 10);
 
-__attribute__((export))
-uint64_t test_get_total_connections(void) {
-    return total_connections;
+    // Emit demo metrics - using volatile to prevent optimization
+    volatile uint64_t counter = demo_counter;
+    volatile uint64_t active = demo_active;
+    
+    // Call emit functions with actual string data
+    static const char starts[] = "container_starts_total";
+    static const char stops[] = "container_stops_total";
+    static const char network[] = "network_connections_total";
+    static const char active_name[] = "active_containers";
+    
+    epbf_emit_counter(starts, sizeof(starts)-1, counter, 0, 0);
+    epbf_emit_counter(stops, sizeof(stops)-1, counter / 2, 0, 0);
+    epbf_emit_counter(network, sizeof(network)-1, counter * 3, 0, 0);
+    epbf_emit_gauge(active_name, sizeof(active_name)-1, (double)active, 0, 0);
+
+    log_info("Demo metrics emitted");
 }
