@@ -4,12 +4,12 @@
 
 ## 🚀 Возможности
 
-- **eBPF на основе** — мониторинг на уровне ядра Linux без влияния на производительность
-- **WASM плагины** — безопасное выполнение пользовательского кода в песочнице
+- **eBPF мониторинг** — сборка и загрузка eBPF-программ на уровне ядра Linux
+- **Docker-сборка** — плагины компилируются в изолированных контейнерах
 - **Git-репозитории** — плагины распространяются как Git-репозитории
 - **Prometheus совместимость** — экспорт метрик в формате Prometheus
-- **Grafana Scenes** — встроенная визуализация через Grafana Scenes в React UI
-- **Rootless режим** — работа без root-прав благодаря WASM изоляции
+- **React UI** — веб-интерфейс с дашбордами, фильтрами и графиками в реальном времени
+- **Rootless режим** — работа без root-прав благодаря проверке eBPF verifier'ом
 - **PromQL фильтрация** — встроенный DSL для фильтрации метрик (rate, sum, per_second, etc.)
 
 ## 📋 Содержание
@@ -28,7 +28,7 @@
 │                     React UI (shadcn/ui)                     │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
 │  │  Plugins    │  │   Metrics   │  │    Dashboard        │  │
-│  │  Manager    │  │   Browser   │  │    (Grafana Scenes) │  │
+│  │  Manager    │  │   Browser   │  │    (Recharts)       │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 └─────────────────────┬───────────────────────────────────────┘
                       │ REST API + WebSocket
@@ -37,20 +37,22 @@
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
 │  │   Plugin    │  │   Filter    │  │     Metrics         │  │
 │  │   Service   │  │   Engine    │  │     Service         │  │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
-└─────────┬───────────────────┬───────────────────┬───────────┘
-          │                   │                   │
-┌─────────▼────────┐ ┌────────▼───────┐ ┌────────▼───────────┐
-│  Plugin Builder  │ │  WASM Runtime  │ │   eBPF Loader      │
-│  (clang + LLVM)  │ │  (wasmtime)    │ │   (libbpf/cilium)  │
-└──────────────────┘ └────────────────┘ └────────────────────┘
-          │                   │                   │
-          └───────────────────┼───────────────────┘
-                              │
-                  ┌───────────▼───────────┐
-                  │   PostgreSQL + S3     │
-                  │   (metadata + blobs)  │
-                  └───────────────────────┘
+│  └──────┬──────┘  └──────┬──────┘  └──────────┬──────────┘  │
+└─────────┼────────────────┼────────────────────┼─────────────┘
+          │                │                    │
+   ┌──────▼──────┐  ┌─────▼──────┐  ┌──────────▼──────────┐
+   │   Plugin    │  │   eBPF     │  │   Prometheus        │
+   │   Builder   │  │   Runtime  │  │   Scraper           │
+   │  (Docker)   │  │  (native)  │  │   (:9090)           │
+   └──────┬──────┘  └─────┬──────┘  └──────────┬──────────┘
+          │                │                    │
+          └────────────────┼────────────────────┘
+                           │
+              ┌────────────▼────────────┐
+              │   PostgreSQL + S3       │
+              │   (:5432)    (:3900)    │
+              │   (metadata + blobs)    │
+              └─────────────────────────┘
 ```
 
 ## 🚀 Быстрый старт
@@ -60,7 +62,7 @@
 - Linux 5.8+ (для eBPF)
 - Go 1.21+
 - Docker и Docker Compose
-- Clang 14+ (для сборки плагинов)
+- Clang 14+ (для сборки плагинов в Docker-контейнере)
 
 ### Запуск
 
@@ -71,30 +73,19 @@ git clone https://github.com/epbf-monitoring/epbf-monitoring.git
 cd epbf-monitoring
 ```
 
-2. **Запустите зависимости (PostgreSQL + Garage S3)**
+2. **Запустите зависимости (PostgreSQL + Garage S3 + Prometheus)**
 
 ```bash
-cd deployments/
-export DOCKER_HOST="unix:///Users/asa/.colima/default/docker.sock"  # Для macOS/Colima
-docker-compose up -d
+make docker-up
 ```
 
 3. **Инициализируйте базу данных**
 
 ```bash
-docker exec -i epbf-postgres psql -U epbf -d epbf < ../internal/storage/postgres/migrations/001_init_schema.up.sql
+make migrate-run
 ```
 
-Ожидаемый вывод:
-```
-CREATE EXTENSION
-CREATE TABLE
-CREATE INDEX
-...
-INSERT 0 1
-```
-
-4. **Настройте Garage S3 - создайте бакет и ключ**
+4. **Настройте Garage S3 — создайте бакет и ключ**
 
 ```bash
 # Создайте бакет
@@ -104,76 +95,39 @@ docker exec epbf-garage /garage bucket create epbf-plugins
 docker exec epbf-garage /garage key create --admin epbf-admin
 ```
 
-Ожидаемый вывод:
-```
-==== ACCESS KEY INFORMATION ====
-Key ID:              GKxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-Key name:            epbf-admin
-Secret key:          xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-Created:             ...
-Validity:            valid
-Can create buckets:  true
-```
-
-**Запишите Key ID и Secret key - они понадобятся для настройки!**
+**Запишите Key ID и Secret key — они понадобятся для настройки!**
 
 5. **Выдайте ключу права на бакет**
 
 ```bash
-# Замените GKxxx на ваш Key ID из предыдущего шага
 docker exec epbf-garage /garage bucket allow \
   --read --write --owner \
   epbf-plugins \
   --key GKxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-6. **Обновите переменные окружения в docker-compose.yml**
+6. **Обновите переменные окружения**
 
-Откройте `deployments/docker-compose.yml` и найдите секцию `epbf-monitor`:
+Скопируйте `deployments/.env.example` в `deployments/.env` и укажите ваши S3 credentials:
 
-```yaml
-epbf-monitor:
-  environment:
-    S3_ACCESS_KEY: GKxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx  # Ваш Key ID
-    S3_SECRET_KEY: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx  # Ваш Secret key
+```
+S3_ACCESS_KEY=GKxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+S3_SECRET_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-7. **Перезапустите сервер с новыми credentials**
+7. **Запустите сервер**
 
 ```bash
-docker-compose restart epbf-monitor
-```
-
-8. **Запустите сервер**
-
-Приложение автоматически загружает переменные окружения из `deployments/.env`:
-
-```bash
-# Простой запуск (автозагрузка deployments/.env)
 make run-dev
-
-# Или напрямую
-go run ./cmd/epbf-monitor
 ```
 
-Приложение попытается загрузить `.env` файл из следующих мест (по порядку):
-- `.env` в текущей директории
-- `deployments/.env` 
-- `../deployments/.env`
+Приложение автоматически загружает переменные окружения из `deployments/.env`.
 
-Вы также можете скопировать `deployments/.env.example` в корень проекта как `.env` и настроить под себя.
-
-**Запуск с Docker (рекомендуется):**
-
-```bash
-make docker-up
-```
-
-9. **Проверьте работу**
+8. **Проверьте работу**
 
 ```bash
 curl http://localhost:8080/health
-# {"status":"ok","timestamp":"..."}
+# {"status":"ok"}
 
 curl http://localhost:8080/metrics
 # epbf_info{version="0.1.0"} 1
@@ -184,17 +138,7 @@ curl http://localhost:8080/metrics
 ```bash
 curl -X POST http://localhost:8080/api/v1/plugins \
   -H "Content-Type: application/json" \
-  -d '{
-    "git_url": "https://github.com/epbf-monitoring/plugin-network.git"
-  }'
-```
-
-Или используйте тестовый плагин из репозитория:
-
-```bash
-curl -X POST http://localhost:8080/api/v1/plugins \
-  -H "Content-Type: application/json" \
-  -d '{"git_url": "file:///workspace/plugins/example-container-monitor"}'
+  -d '{"git_url": "https://github.com/epbf-monitoring/plugin-network.git"}'
 ```
 
 Проверьте статус сборки:
@@ -215,11 +159,8 @@ plugin-example/
 ├── ebpf/
 │   ├── main.c           # eBPF программа
 │   └── Makefile
-├── wasm/
-│   ├── main.c           # WASM логика
-│   └── Makefile
-├── filters.yml          # Предустановленные фильтры
-└── dashboard.json       # Конфиг дашборда
+├── filters.yml          # Предустановленные фильтры (опционально)
+└── dashboard.json       # Конфиг дашборда (опционально)
 ```
 
 ### manifest.yml
@@ -237,49 +178,37 @@ ebpf:
       type: tracepoint
       attach: sys_enter_connect
 
-wasm:
-  entry: wasm/main.c
-  sdk_version: "1.0"
+events:
+  - type: 0
+    name: tcp_connection
+    metric: tcp_connections_total
 
 metrics:
   - name: tcp_connections_total
     type: counter
     help: Total TCP connections
     labels: [dest_ip, dest_port]
-
-filters:
-  - name: connections_per_second
-    expression: rate(tcp_connections_total[1m])
 ```
 
-### WASM плагин (C)
+### eBPF программа (C)
 
 ```c
-#include "epbf.h"
+#include <vmlinux.h>
+#include <bpf/bpf_helpers.h>
 
-int epbf_init(void) {
-    EPBF_LOG_INFO("Plugin initialized");
+// Ring buffer для отправки событий
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 256 * 1024);
+} events SEC(".maps");
+
+SEC("tracepoint/syscalls/sys_enter_connect")
+int tcp_connect(void *ctx) {
+    // Ваша логика отслеживания соединений
     return 0;
 }
 
-void process_events() {
-    // Подписка на eBPF map
-    int map_fd = epbf_subscribe_map("tcp_events");
-    
-    // Обработка событий
-    while (1) {
-        struct event e;
-        if (read_event(map_fd, &e) > 0) {
-            // Эмит метрики
-            epbf_label_t labels[] = {
-                {"dest_ip", e.dest_ip},
-                {"dest_port", e.dest_port}
-            };
-            epbf_emit_counter("tcp_connections_total", 1, labels, 2);
-        }
-        epbf_sleep(100);
-    }
-}
+char __license[] SEC("license") = "GPL";
 ```
 
 ### Публикация плагина
@@ -299,6 +228,8 @@ void process_events() {
 | `POST` | `/api/v1/plugins` | Добавить плагин |
 | `GET` | `/api/v1/plugins/{id}` | Информация о плагине |
 | `DELETE` | `/api/v1/plugins/{id}` | Удалить плагин |
+| `POST` | `/api/v1/plugins/{id}/enable` | Включить плагин |
+| `POST` | `/api/v1/plugins/{id}/disable` | Отключить плагин |
 | `POST` | `/api/v1/plugins/{id}/rebuild` | Пересобрать плагин |
 
 ### Метрики
@@ -307,6 +238,8 @@ void process_events() {
 |-------|----------|----------|
 | `GET` | `/api/v1/metrics` | Список метрик |
 | `GET` | `/api/v1/metrics/{name}` | Детали метрики |
+| `POST` | `/api/v1/metrics/query` | Выполнить PromQL-запрос |
+| `GET` | `/api/v1/metrics/names` | Список имён метрик |
 
 ### Фильтры
 
@@ -315,6 +248,24 @@ void process_events() {
 | `GET` | `/api/v1/filters` | Список фильтров |
 | `POST` | `/api/v1/filters` | Создать фильтр |
 | `DELETE` | `/api/v1/filters/{id}` | Удалить фильтр |
+| `POST` | `/api/v1/filters/execute` | Выполнить фильтр |
+
+### Дашборды
+
+| Метод | Endpoint | Описание |
+|-------|----------|----------|
+| `GET` | `/api/v1/dashboard` | Получить дашборд |
+| `POST` | `/api/v1/dashboard` | Создать дашборд |
+| `PUT` | `/api/v1/dashboard` | Обновить дашборд |
+| `DELETE` | `/api/v1/dashboard/{id}` | Удалить дашборд |
+
+### WebSocket
+
+```
+ws://localhost:8080/ws
+```
+
+Подписка на обновления метрик в реальном времени.
 
 ### Prometheus
 
@@ -322,12 +273,12 @@ void process_events() {
 # Экспорт метрик
 curl http://localhost:8080/metrics
 
-# Интеграция с Prometheus
+# Интеграция с Prometheus (уже настроена)
 # В prometheus.yml:
 scrape_configs:
-  - job_name: 'epbf-monitoring'
+  - job_name: 'epbf-monitor'
     static_configs:
-      - targets: ['localhost:8080']
+      - targets: ['172.17.0.1:8080']
 ```
 
 ## 🛠 Разработка
@@ -347,13 +298,23 @@ make test
 ### Запуск с Docker
 
 ```bash
-# Сборка образов
-docker build -f deployments/docker/builder.Dockerfile -t epbf-monitor-builder:latest .
-docker build -f deployments/docker/runtime.Dockerfile -t epbf-monitor-runtime:latest .
+# Запуск всех сервисов (DB, S3, Prometheus, UI)
+make docker-up
 
-# Запуск
-docker-compose -f deployments/docker-compose.yml up
+# Остановка
+make docker-down
+
+# Логи
+make docker-logs
 ```
+
+### UI разработка
+
+```bash
+make ui-dev
+```
+
+Откройте http://localhost:3000
 
 ### Переменные окружения
 
@@ -369,18 +330,23 @@ docker-compose -f deployments/docker-compose.yml up
 | `S3_ACCESS_KEY` | S3 access key | - |
 | `S3_SECRET_KEY` | S3 secret key | - |
 | `S3_BUCKET` | S3 bucket name | `epbf-plugins` |
+| `S3_REGION` | S3 region | `garage` |
+| `ENABLE_DOCKER` | Включить Docker-сборку | `true` |
+| `BUILD_DIR` | Директория для сборки | `/tmp/epbf-builds` |
+| `LOG_LEVEL` | Уровень логирования | `info` |
 
 ## 📚 Документация
 
-- [Архитектурный план](docs/plan.md) — детальное описание архитектуры
-- [Roadmap](docs/roadmap.md) — план реализации по фазам
-- [Введение](docs/introduction.md) — обоснование проекта
+- [docs/tech-app.md](docs/tech-app.md) — техническая документация (отчёт по практике)
+- [docs/plan.md](docs/plan.md) — архитектурный план
+- [docs/roadmap.md](docs/roadmap.md) — план реализации по фазам
+- [deployments/RUNNING.md](deployments/RUNNING.md) — руководство по запуску
 
 ## 🛡 Безопасность
 
-- **WASM песочница** — плагины выполняются в изолированной среде
-- **eBPF верификатор** — все eBPF программы проходят проверку ядром
-- **Rootless режим** — работа без root-прав
+- **eBPF verifier** — все eBPF программы проходят проверку ядром Linux
+- **Docker-изоляция** — плагины собираются в контейнерах с ограничением ресурсов (512MB RAM, 1 CPU)
+- **Rootless режим** — работа без root-прав благодаря проверке eBPF verifier'ом
 - **Ограниченные capabilities** — только `CAP_BPF` и `CAP_PERFMON`
 
 ## 📊 Фильтрация метрик
@@ -417,7 +383,7 @@ MIT License — см. [LICENSE](LICENSE) файл.
 ## 🔗 Ссылки
 
 - [eBPF Documentation](https://ebpf.io/)
-- [Cilium libbpf](https://github.com/cilium/libbpf)
-- [Wasmtime](https://github.com/bytecodealliance/wasmtime)
-- [Grafana Scenes](https://grafana.com/docs/grafana/latest/developers/scenes/)
+- [Cilium eBPF](https://github.com/cilium/ebpf)
+- [Prometheus](https://prometheus.io/docs/)
+- [Grafana](https://grafana.com/docs/grafana/latest/)
 - [Garage S3](https://garagehq.deuxfleurs.fr/)
